@@ -1,0 +1,74 @@
+name: Build workflow draft quota recovery
+
+on:
+  push:
+    branches:
+      - codex/build-workflow-draft-quota-recovery
+    paths:
+      - .github/workflows/build-workflow-draft-quota-recovery.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-workflow-draft-quota-recovery
+  cancel-in-progress: false
+
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: codex/build-workflow-draft-quota-recovery
+
+      - name: Apply source fix
+        run: python scripts/apply-workflow-draft-quota-fix.py
+
+      - name: Install frontend dependencies
+        uses: ./.github/actions/setup-frontend
+
+      - name: Format
+        run: pnpm format
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint:no-cache
+
+      - name: Run persistence regression tests
+        run: |
+          pnpm test:unit \
+            src/platform/workflow/persistence/base/storageIO.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.fsm.test.ts \
+            src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.test.ts
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        env:
+          NX_SKIP_NX_CACHE: 'true'
+          VITE_USE_LEGACY_DEFAULT_GRAPH: 'true'
+        run: pnpm run build
+
+      - name: Publish clean source branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "xmarre"
+          git config user.email "54859656+xmarre@users.noreply.github.com"
+          git rm \
+            .github/workflows/build-workflow-draft-quota-recovery.yml \
+            scripts/apply-workflow-draft-quota-fix.py
+          git add -A
+          git diff --cached --check
+          tree="$(git write-tree)"
+          commit="$(printf '%s\n' 'fix: preserve workflow drafts across quota failures' | git commit-tree "$tree" -p 1485bb3ec538470143bd6fdb5c27bd4d246204f7)"
+          git reset --hard "$commit"
+          git push --force origin HEAD:fix/workflow-draft-quota-recovery
