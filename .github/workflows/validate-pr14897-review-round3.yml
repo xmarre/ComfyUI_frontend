@@ -23,6 +23,9 @@ jobs:
       - name: Apply review fixes
         run: python scripts/apply-pr14897-review-round3.py
 
+      - name: Fix storage read failure injection
+        run: python scripts/fix-pr14897-round3-storage-test.py
+
       - name: Setup frontend
         uses: ./.github/actions/setup-frontend
 
@@ -108,7 +111,8 @@ jobs:
           git config user.email "54859656+xmarre@users.noreply.github.com"
           git rm \
             .github/workflows/validate-pr14897-review-round3.yml \
-            scripts/apply-pr14897-review-round3.py
+            scripts/apply-pr14897-review-round3.py \
+            scripts/fix-pr14897-round3-storage-test.py
           git add -A
           git diff --cached --check
           git commit -m "wip: address PR 14897 review round three"
