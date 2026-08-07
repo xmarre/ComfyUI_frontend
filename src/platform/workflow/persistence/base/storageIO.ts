@@ -12,8 +12,6 @@ import type {
 } from './draftTypes'
 import { StorageKeys } from './storageKeys'
 
-/** Flag indicating if storage is available */
-let storageAvailable = true
 let workflowWritesBlocked = false
 const pendingPersistenceFlushes = new Set<() => void>()
 
@@ -35,11 +33,7 @@ function flushPendingWorkflowPersistence(): void {
 }
 
 export function isStorageAvailable(): boolean {
-  return storageAvailable && !workflowWritesBlocked
-}
-
-export function markStorageUnavailable(): void {
-  storageAvailable = false
+  return !workflowWritesBlocked
 }
 
 function isQuotaExceeded(error: unknown): boolean {
@@ -68,8 +62,6 @@ function isValidIndex(value: unknown): value is DraftIndexV2 {
  * Reads and parses the draft index from localStorage.
  */
 export function readIndex(workspaceId: string): DraftIndexV2 | null {
-  if (!storageAvailable) return null
-
   try {
     const key = StorageKeys.draftIndex(workspaceId)
     const json = localStorage.getItem(key)
@@ -88,7 +80,7 @@ export function readIndex(workspaceId: string): DraftIndexV2 | null {
  * Writes the draft index to localStorage.
  */
 export function writeIndex(workspaceId: string, index: DraftIndexV2): boolean {
-  if (!storageAvailable || workflowWritesBlocked) return false
+  if (workflowWritesBlocked) return false
 
   try {
     const key = StorageKeys.draftIndex(workspaceId)
@@ -107,8 +99,6 @@ export function readPayload(
   workspaceId: string,
   draftKey: string
 ): DraftPayloadV2 | null {
-  if (!storageAvailable) return null
-
   try {
     const key = `${StorageKeys.prefixes.draftPayload}${workspaceId}:${draftKey}`
     const json = localStorage.getItem(key)
@@ -128,7 +118,7 @@ export function writePayload(
   draftKey: string,
   payload: DraftPayloadV2
 ): boolean {
-  if (!storageAvailable || workflowWritesBlocked) return false
+  if (workflowWritesBlocked) return false
 
   try {
     const key = `${StorageKeys.prefixes.draftPayload}${workspaceId}:${draftKey}`
@@ -165,8 +155,6 @@ export function deletePayloads(workspaceId: string, draftKeys: string[]): void {
  * Gets all draft payload keys for a workspace from localStorage.
  */
 export function getPayloadKeys(workspaceId: string): string[] {
-  if (!storageAvailable) return []
-
   const prefix = `${StorageKeys.prefixes.draftPayload}${workspaceId}:`
   const keys: string[] = []
 
@@ -394,7 +382,7 @@ function readLocalPointer<T>(
 }
 
 function writeStorage(storage: Storage, key: string, value: string): void {
-  if (!storageAvailable || workflowWritesBlocked) return
+  if (workflowWritesBlocked) return
 
   try {
     storage.setItem(key, value)

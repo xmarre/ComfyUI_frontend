@@ -311,6 +311,42 @@ describe('useWorkflowPersistenceV2', () => {
     })
   })
 
+  describe('save failure notifications', () => {
+    it('shows one toast per continuous save failure episode', async () => {
+      await loadBlankIntoActiveWorkflow()
+
+      const draftStore = useWorkflowDraftStoreV2()
+      const saveDraftSpy = vi.spyOn(draftStore, 'saveDraft')
+      saveDraftSpy.mockReturnValue(false)
+
+      mountWorkflowPersistence()
+
+      mocks.state.currentGraph = { nodes: [{ id: 1 }] }
+      mocks.state.graphChangedHandler?.()
+      await vi.runAllTimersAsync()
+
+      mocks.state.currentGraph = { nodes: [{ id: 2 }] }
+      mocks.state.graphChangedHandler?.()
+      await vi.runAllTimersAsync()
+
+      expect(mockToastAdd).toHaveBeenCalledTimes(1)
+
+      saveDraftSpy.mockReturnValueOnce(true)
+      mocks.state.currentGraph = { nodes: [{ id: 3 }] }
+      mocks.state.graphChangedHandler?.()
+      await vi.runAllTimersAsync()
+
+      expect(mockToastAdd).toHaveBeenCalledTimes(1)
+
+      saveDraftSpy.mockReturnValueOnce(false)
+      mocks.state.currentGraph = { nodes: [{ id: 4 }] }
+      mocks.state.graphChangedHandler?.()
+      await vi.runAllTimersAsync()
+
+      expect(mockToastAdd).toHaveBeenCalledTimes(2)
+    })
+  })
+
   describe('loadPreviousWorkflowFromStorage', () => {
     it('does not restore the active workflow early when open tab state exists', async () => {
       const workflowStore = useWorkflowStore()

@@ -86,11 +86,13 @@ export function useWorkflowPersistenceV2() {
   )
 
   const lastSavedJsonByPath = ref<Record<string, string>>({})
+  const failedSavePaths = new Set<string>()
 
   watch(workflowPersistenceEnabled, (enabled) => {
     if (!enabled) {
       draftStore.reset()
       lastSavedJsonByPath.value = {}
+      failedSavePaths.clear()
     }
   })
 
@@ -113,13 +115,18 @@ export function useWorkflowPersistenceV2() {
     })
 
     if (!saved) {
-      toast.add({
-        severity: 'error',
-        summary: t('g.error'),
-        detail: t('toastMessages.failedToSaveDraft')
-      })
+      if (!failedSavePaths.has(workflowPath)) {
+        toast.add({
+          severity: 'error',
+          summary: t('g.error'),
+          detail: t('toastMessages.failedToSaveDraft')
+        })
+        failedSavePaths.add(workflowPath)
+      }
       return
     }
+
+    failedSavePaths.delete(workflowPath)
 
     // Update session pointer
     tabState.setActivePath(workflowPath)
@@ -179,6 +186,7 @@ export function useWorkflowPersistenceV2() {
     debouncedPersist.cancel()
     draftStore.removeDraft(blank.path)
     delete lastSavedJsonByPath.value[blank.path]
+    failedSavePaths.delete(blank.path)
     tabState.clearActivePathPointer()
   }
 
