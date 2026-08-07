@@ -25,7 +25,38 @@ jobs:
           ref: codex/build-workflow-draft-quota-recovery
 
       - name: Apply source fix
-        run: python scripts/apply-workflow-draft-quota-fix.py
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/apply-workflow-draft-quota-fix.py')
+          text = path.read_text()
+          old = """for label, old in [
+              ('readIndex availability guard', '  if (!storageAvailable) return null\\n\\n'),
+              ('readPayload availability guard', '  if (!storageAvailable) return null\\n\\n'),
+              ('getPayloadKeys availability guard', '  if (!storageAvailable) return []\\n\\n'),
+          ]:
+              text = replace_once(text, old, '', label)
+          """
+          new = """null_guard = '  if (!storageAvailable) return null\\n\\n'
+          if text.count(null_guard) != 2:
+              raise RuntimeError(
+                  f'read availability guards: expected two matches, found {text.count(null_guard)}'
+              )
+          text = text.replace(null_guard, '', 2)
+          text = replace_once(
+              text,
+              '  if (!storageAvailable) return []\\n\\n',
+              '',
+              'getPayloadKeys availability guard',
+          )
+          """
+          if old not in text:
+              raise RuntimeError('patch-script availability block not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          python scripts/apply-workflow-draft-quota-fix.py
 
       - name: Install frontend dependencies
         uses: ./.github/actions/setup-frontend
