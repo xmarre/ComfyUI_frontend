@@ -1,0 +1,123 @@
+name: Validate PR 14897 final compatibility
+
+on:
+  push:
+    branches:
+      - work/pr14897-final-compat
+    paths:
+      - .github/workflows/validate-pr14897-final-compat.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: work/pr14897-final-compat
+
+      - name: Overlay validated repair onto latest upstream main
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pr14897
+          cp --parents \
+            browser_tests/tests/workflowPersistence.spec.ts \
+            src/platform/workflow/core/services/workflowService.test.ts \
+            src/platform/workflow/core/services/workflowService.ts \
+            src/platform/workflow/management/stores/comfyWorkflow.ts \
+            src/platform/workflow/management/stores/workflowStore.test.ts \
+            src/platform/workflow/persistence/base/storageIO.test.ts \
+            src/platform/workflow/persistence/base/storageIO.ts \
+            src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.test.ts \
+            src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts \
+            /tmp/pr14897/
+          git fetch https://github.com/Comfy-Org/ComfyUI_frontend.git main
+          git checkout -B work/pr14897-final-compat FETCH_HEAD
+          cp -a /tmp/pr14897/. .
+
+      - name: Setup frontend
+        uses: ./.github/actions/setup-frontend
+
+      - name: Static and focused compatibility checks
+        run: |
+          pnpm format
+          pnpm format:check
+          pnpm lint:no-cache
+          pnpm knip:no-cache
+          pnpm test:unit \
+            src/platform/workflow/persistence/base/storageIO.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.test.ts \
+            src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.test.ts \
+            src/platform/workflow/core/services/workflowService.test.ts \
+            src/platform/workflow/management/stores/workflowStore.test.ts
+          pnpm typecheck
+          pnpm build
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install current ComfyUI backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/Comfy-Org/ComfyUI.git /tmp/ComfyUI
+          python -m pip install --upgrade pip
+          python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r /tmp/ComfyUI/requirements.txt
+          mkdir -p /tmp/ComfyUI/custom_nodes/ComfyUI_devtools
+          cp -r ./tools/devtools/* /tmp/ComfyUI/custom_nodes/ComfyUI_devtools/
+
+      - name: Start ComfyUI backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/ComfyUI
+          python main.py --cpu --multi-user --front-end-root "$GITHUB_WORKSPACE/dist" >/tmp/comfyui-e2e.log 2>&1 &
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:8188/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/comfyui-e2e.log
+          exit 1
+
+      - name: Targeted workflow persistence E2E
+        shell: bash
+        run: |
+          set +e
+          pnpm exec playwright test browser_tests/tests/workflowPersistence.spec.ts \
+            --project=chromium \
+            --grep "Repairs real V1 workflow draft storage after a false V2 migration marker|Does not save a startup-only workflow and deduplicates load failures"
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            cat /tmp/comfyui-e2e.log || true
+          fi
+          exit $rc
+
+      - name: Publish exact validated tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "xmarre"
+          git config user.email "54859656+xmarre@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "wip: final compatibility validation for workflow draft repair"
+          git push --force origin HEAD:work/pr14897-final-compat
