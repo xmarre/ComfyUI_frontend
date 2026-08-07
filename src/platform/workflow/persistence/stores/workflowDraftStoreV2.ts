@@ -8,7 +8,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-import type { DraftIndexV2 } from '../base/draftTypes'
+import type { DraftIndexV2, DraftPayloadV2 } from '../base/draftTypes'
 import { MAX_DRAFTS } from '../base/draftTypes'
 import {
   createEmptyIndex,
@@ -28,7 +28,6 @@ import {
   deletePayloads,
   getPayloadKeys,
   isStorageAvailable,
-  markStorageUnavailable,
   readIndex,
   readPayload,
   writeIndex,
@@ -52,6 +51,8 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
   // In-memory cache of the index per workspace (synced with localStorage)
   // Key is workspaceId, value is the cached index
   const indexCacheByWorkspace = ref<Record<string, DraftIndexV2>>({})
+  let saveFailureNotified = false
+  let persistencePauseDepth = 0
 
   /**
    * Gets the current workspace ID fresh (not cached).
@@ -59,6 +60,40 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
    */
   function currentWorkspaceId(): string {
     return getWorkspaceId()
+  }
+
+  /**
+   * Returns true only for the first failure in a continuous persistence-failure
+   * episode. localStorage quota/availability is shared by all workflow paths,
+   * and a single graph load can invoke both draft-save callers.
+   */
+  function shouldNotifySaveFailure(): boolean {
+    if (saveFailureNotified) return false
+    saveFailureNotified = true
+    return true
+  }
+
+  /** Any successful draft save proves persistence recovered and resets the episode. */
+  function markSaveSucceeded(): void {
+    saveFailureNotified = false
+  }
+
+  /**
+   * Temporarily suppresses draft writes initiated by graph-load lifecycle hooks.
+   * The returned resume function is idempotent and supports nested pauses.
+   */
+  function pausePersistence(): () => void {
+    persistencePauseDepth++
+    let resumed = false
+    return () => {
+      if (resumed) return
+      resumed = true
+      persistencePauseDepth = Math.max(0, persistencePauseDepth - 1)
+    }
+  }
+
+  function isPersistencePaused(): boolean {
+    return persistencePauseDepth > 0
   }
 
   /**
@@ -114,17 +149,18 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     // loadIndex() runs orphan cleanup on cache miss, which would
     // delete a payload written before the index is updated.
     const index = loadIndex()
+    const previousPayload = readPayload(workspaceId, draftKey)
 
-    // Write payload before persisting the updated index
+    // Write payload before persisting the updated index.
     const payloadWritten = writePayload(workspaceId, draftKey, {
       data,
       updatedAt: now
     })
 
     if (!payloadWritten) {
-      // Quota exceeded - try eviction loop
-      return handleQuotaExceeded(path, data, meta)
+      return handleQuotaExceeded(path, data, meta, previousPayload)
     }
+
     const { index: newIndex, evicted } = upsertEntry(
       index,
       path,
@@ -132,73 +168,162 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
       MAX_DRAFTS
     )
 
-    // Delete evicted payloads
-    deletePayloads(workspaceId, evicted)
-
-    // Persist index
+    // Commit index ownership before deleting LRU payloads. If the index write
+    // fails, the previous payload/index pair remains recoverable.
     if (!persistIndex(newIndex)) {
-      // Index write failed - try to recover
-      deletePayload(workspaceId, draftKey)
+      restoreTargetPayload(workspaceId, draftKey, previousPayload)
+      indexCacheByWorkspace.value[workspaceId] = index
       return false
     }
 
+    deletePayloads(workspaceId, evicted)
     return true
+  }
+
+  function restoreTargetPayload(
+    workspaceId: string,
+    draftKey: string,
+    previousPayload: DraftPayloadV2 | null
+  ): void {
+    if (previousPayload) {
+      writePayload(workspaceId, draftKey, previousPayload)
+    } else {
+      deletePayload(workspaceId, draftKey)
+    }
+  }
+
+  function stripOrderKey(index: DraftIndexV2, draftKey: string): DraftIndexV2 {
+    const entries = { ...index.entries }
+    delete entries[draftKey]
+    return {
+      ...index,
+      updatedAt: Date.now(),
+      order: index.order.filter((key) => key !== draftKey),
+      entries
+    }
+  }
+
+  function discardDriftedKey(
+    workspaceId: string,
+    index: DraftIndexV2,
+    draftKey: string,
+    evictedPayloads: Map<string, DraftPayloadV2>
+  ): DraftIndexV2 | null {
+    const driftedPayload = readPayload(workspaceId, draftKey)
+    const cleanedIndex = stripOrderKey(index, draftKey)
+    if (!persistIndex(cleanedIndex)) return null
+
+    // The index no longer owns this corrupt key. Remove its payload as part of
+    // the same quota-recovery transaction so stale storage actually frees
+    // space; rollbackQuotaEvictions restores it if the incoming save fails.
+    if (driftedPayload) evictedPayloads.set(draftKey, driftedPayload)
+    deletePayload(workspaceId, draftKey)
+    return cleanedIndex
+  }
+
+  function rollbackQuotaEvictions(
+    workspaceId: string,
+    originalIndex: DraftIndexV2,
+    evictedPayloads: Map<string, DraftPayloadV2>
+  ): void {
+    for (const [draftKey, payload] of evictedPayloads) {
+      if (!readPayload(workspaceId, draftKey)) {
+        writePayload(workspaceId, draftKey, payload)
+      }
+    }
+
+    // If an external writer changed storage during recovery, never recreate an
+    // index entry whose payload could not be restored.
+    const payloadKeys = new Set(getPayloadKeys(workspaceId))
+    const recoveredIndex = removeOrphanedEntries(originalIndex, payloadKeys)
+    indexCacheByWorkspace.value[workspaceId] = recoveredIndex
+    writeIndex(workspaceId, recoveredIndex)
   }
 
   /**
    * Handles quota exceeded by evicting oldest drafts until write succeeds.
+   * Evictions are rolled back if the incoming draft cannot be committed.
    */
   function handleQuotaExceeded(
     path: string,
     data: string,
-    meta: DraftMeta
+    meta: DraftMeta,
+    previousPayload: DraftPayloadV2 | null
   ): boolean {
     const workspaceId = currentWorkspaceId()
-    const index = loadIndex()
+    const originalIndex = loadIndex()
     const draftKey = hashPath(path)
+    const evictedPayloads = new Map<string, DraftPayloadV2>()
 
-    // Try evicting oldest entries until we can write
-    let currentIndex = index
+    let currentIndex = originalIndex
     while (currentIndex.order.length > 0) {
       const oldestKey = currentIndex.order.find((key) => key !== draftKey)
-      if (!oldestKey) break // Only the target draft remains
+      if (!oldestKey) break
 
-      // Evict oldest
-      const oldestEntry = Object.values(currentIndex.entries).find(
-        (e) => hashPath(e.path) === oldestKey
-      )
-      if (!oldestEntry) break
-
-      const result = removeEntry(currentIndex, oldestEntry.path)
-      currentIndex = result.index
-      if (result.removedKey) {
-        deletePayload(workspaceId, result.removedKey)
+      const oldestEntry = currentIndex.entries[oldestKey]
+      if (!oldestEntry) {
+        const cleanedIndex = discardDriftedKey(
+          workspaceId,
+          currentIndex,
+          oldestKey,
+          evictedPayloads
+        )
+        if (!cleanedIndex) {
+          rollbackQuotaEvictions(workspaceId, originalIndex, evictedPayloads)
+          return false
+        }
+        currentIndex = cleanedIndex
+        continue
       }
 
-      // Try writing again
-      const success = writePayload(workspaceId, draftKey, {
-        data,
-        updatedAt: Date.now()
-      })
+      const result = removeEntry(currentIndex, oldestEntry.path)
+      if (!result.removedKey) {
+        const cleanedIndex = discardDriftedKey(
+          workspaceId,
+          currentIndex,
+          oldestKey,
+          evictedPayloads
+        )
+        if (!cleanedIndex) {
+          rollbackQuotaEvictions(workspaceId, originalIndex, evictedPayloads)
+          return false
+        }
+        currentIndex = cleanedIndex
+        continue
+      }
 
-      if (success) {
-        // Update index with the new entry
+      const evictedPayload = readPayload(workspaceId, result.removedKey)
+
+      // Make the index stop owning this payload before deleting it. This keeps
+      // index/payload invariants recoverable even if the page dies mid-retry.
+      if (!persistIndex(result.index)) {
+        rollbackQuotaEvictions(workspaceId, originalIndex, evictedPayloads)
+        return false
+      }
+      currentIndex = result.index
+
+      if (evictedPayload) {
+        evictedPayloads.set(result.removedKey, evictedPayload)
+      }
+      deletePayload(workspaceId, result.removedKey)
+
+      const now = Date.now()
+      if (writePayload(workspaceId, draftKey, { data, updatedAt: now })) {
         const { index: finalIndex } = upsertEntry(
           currentIndex,
           path,
-          { ...meta, updatedAt: Date.now() },
+          { ...meta, updatedAt: now },
           MAX_DRAFTS
         )
-        if (!persistIndex(finalIndex)) {
-          deletePayload(workspaceId, draftKey)
-          return false
-        }
-        return true
+        if (persistIndex(finalIndex)) return true
+
+        restoreTargetPayload(workspaceId, draftKey, previousPayload)
+        rollbackQuotaEvictions(workspaceId, originalIndex, evictedPayloads)
+        return false
       }
     }
 
-    // All evictions failed - mark storage as unavailable
-    markStorageUnavailable()
+    rollbackQuotaEvictions(workspaceId, originalIndex, evictedPayloads)
     return false
   }
 
@@ -398,6 +523,7 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
   function reset(): void {
     const workspaceId = currentWorkspaceId()
     delete indexCacheByWorkspace.value[workspaceId]
+    saveFailureNotified = false
   }
 
   return {
@@ -408,6 +534,10 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     getDraft,
     getMostRecentPath,
     loadPersistedWorkflow,
-    reset
+    reset,
+    shouldNotifySaveFailure,
+    markSaveSucceeded,
+    pausePersistence,
+    isPersistencePaused
   }
 })
