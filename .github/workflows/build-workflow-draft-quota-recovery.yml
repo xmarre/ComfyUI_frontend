@@ -58,6 +58,137 @@ jobs:
           PY
           python scripts/apply-workflow-draft-quota-fix.py
 
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f'{label}: expected one match, found {count}')
+              return text.replace(old, new, 1)
+
+          path = Path(
+              'src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.ts'
+          )
+          text = path.read_text()
+          text = replace_once(
+              text,
+              "  const lastSavedJsonByPath = ref<Record<string, string>>({})\n",
+              """  const lastSavedJsonByPath = ref<Record<string, string>>({})
+          const failedSavePaths = new Set<string>()
+          """,
+              'failed save path state',
+          )
+          text = replace_once(
+              text,
+              """      draftStore.reset()
+                lastSavedJsonByPath.value = {}
+          """,
+              """      draftStore.reset()
+                lastSavedJsonByPath.value = {}
+                failedSavePaths.clear()
+          """,
+              'persistence disabled cleanup',
+          )
+          text = replace_once(
+              text,
+              """    if (!saved) {
+                toast.add({
+                  severity: 'error',
+                  summary: t('g.error'),
+                  detail: t('toastMessages.failedToSaveDraft')
+                })
+                return
+              }
+
+              // Update session pointer
+          """,
+              """    if (!saved) {
+                if (!failedSavePaths.has(workflowPath)) {
+                  toast.add({
+                    severity: 'error',
+                    summary: t('g.error'),
+                    detail: t('toastMessages.failedToSaveDraft')
+                  })
+                  failedSavePaths.add(workflowPath)
+                }
+                return
+              }
+
+              failedSavePaths.delete(workflowPath)
+
+              // Update session pointer
+          """,
+              'save failure toast dedupe',
+          )
+          text = replace_once(
+              text,
+              """    draftStore.removeDraft(blank.path)
+              delete lastSavedJsonByPath.value[blank.path]
+              tabState.clearActivePathPointer()
+          """,
+              """    draftStore.removeDraft(blank.path)
+              delete lastSavedJsonByPath.value[blank.path]
+              failedSavePaths.delete(blank.path)
+              tabState.clearActivePathPointer()
+          """,
+              'startup blank cleanup',
+          )
+          path.write_text(text)
+
+          path = Path(
+              'src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.test.ts'
+          )
+          text = path.read_text()
+          marker = "  describe('loadPreviousWorkflowFromStorage', () => {\n"
+          test_block = """  describe('save failure notifications', () => {
+            it('shows one toast per continuous save failure episode', async () => {
+              const workflowStore = useWorkflowStore()
+              workflowStore.activeWorkflow =
+                workflowStore.createTemporary('QuotaFailure.json')
+
+              const draftStore = useWorkflowDraftStoreV2()
+              const saveDraftSpy = vi.spyOn(draftStore, 'saveDraft')
+              saveDraftSpy.mockReturnValue(false)
+
+              mountWorkflowPersistence()
+
+              mocks.state.currentGraph = { nodes: [{ id: 1 }] }
+              mocks.state.graphChangedHandler?.()
+              await vi.runAllTimersAsync()
+
+              mocks.state.currentGraph = { nodes: [{ id: 2 }] }
+              mocks.state.graphChangedHandler?.()
+              await vi.runAllTimersAsync()
+
+              expect(mockToastAdd).toHaveBeenCalledTimes(1)
+
+              saveDraftSpy.mockReturnValueOnce(true)
+              mocks.state.currentGraph = { nodes: [{ id: 3 }] }
+              mocks.state.graphChangedHandler?.()
+              await vi.runAllTimersAsync()
+
+              expect(mockToastAdd).toHaveBeenCalledTimes(1)
+
+              saveDraftSpy.mockReturnValueOnce(false)
+              mocks.state.currentGraph = { nodes: [{ id: 4 }] }
+              mocks.state.graphChangedHandler?.()
+              await vi.runAllTimersAsync()
+
+              expect(mockToastAdd).toHaveBeenCalledTimes(2)
+            })
+          })
+
+          """
+          text = replace_once(
+              text,
+              marker,
+              test_block + marker,
+              'save failure notification test insertion',
+          )
+          path.write_text(text)
+          PY
+
       - name: Install frontend dependencies
         uses: ./.github/actions/setup-frontend
 
@@ -94,7 +225,7 @@ jobs:
           set -euo pipefail
           git config user.name "xmarre"
           git config user.email "54859656+xmarre@users.noreply.github.com"
-          git rm \
+          git rm -f \
             .github/workflows/build-workflow-draft-quota-recovery.yml \
             scripts/apply-workflow-draft-quota-fix.py
           git add -A
