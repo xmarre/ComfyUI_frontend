@@ -143,9 +143,7 @@ jobs:
           marker = "  describe('loadPreviousWorkflowFromStorage', () => {\n"
           test_block = """  describe('save failure notifications', () => {
             it('shows one toast per continuous save failure episode', async () => {
-              const workflowStore = useWorkflowStore()
-              workflowStore.activeWorkflow =
-                workflowStore.createTemporary('QuotaFailure.json')
+              await loadBlankIntoActiveWorkflow()
 
               const draftStore = useWorkflowDraftStoreV2()
               const saveDraftSpy = vi.spyOn(draftStore, 'saveDraft')
