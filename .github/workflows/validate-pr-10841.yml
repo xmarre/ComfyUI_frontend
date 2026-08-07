@@ -1,0 +1,43 @@
+name: Validate PR 10841
+
+on:
+  push:
+    branches:
+      - codex/validate-pr-10841
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install frontend dependencies
+        uses: ./.github/actions/setup-frontend
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint:no-cache
+
+      - name: Run focused regression tests
+        run: |
+          pnpm exec vitest run \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/composables/usePaste.test.ts \
+            src/scripts/app.test.ts
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        env:
+          NX_SKIP_NX_CACHE: 'true'
+          VITE_USE_LEGACY_DEFAULT_GRAPH: 'true'
+        run: pnpm run build
