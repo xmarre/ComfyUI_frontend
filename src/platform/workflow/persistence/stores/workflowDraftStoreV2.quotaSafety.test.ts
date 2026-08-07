@@ -388,6 +388,188 @@ describe('workflowDraftStoreV2 quota safety', () => {
     expect(store.getDraft(targetPath)?.data).toBe('{"id":"incoming"}')
   })
 
+  it('restores exact previous payload bytes when an index update fails', async () => {
+    const path = 'workflows/raw-rollback.json'
+    const draftKey = hashPath(path)
+    const indexKey = StorageKeys.draftIndex('personal')
+    const payloadKey = StorageKeys.draftPayload(path, 'personal')
+    const rawPayload = 'malformed-but-previously-stored-payload'
+
+    fakeStorage.setItem(
+      indexKey,
+      JSON.stringify({
+        v: 2,
+        updatedAt: 1,
+        order: [draftKey],
+        entries: {
+          [draftKey]: {
+            path,
+            name: 'raw-rollback',
+            isTemporary: false,
+            updatedAt: 1
+          }
+        }
+      })
+    )
+    fakeStorage.setItem(payloadKey, rawPayload)
+
+    const store = await freshStore()
+    let failNextIndexWrite = true
+    fakeStorage.shouldFailWrite = (key) => {
+      if (key !== indexKey || !failNextIndexWrite) return false
+      failNextIndexWrite = false
+      return true
+    }
+
+    expect(
+      store.saveDraft(path, '{"new":true}', {
+        name: 'raw-rollback',
+        isTemporary: false
+      })
+    ).toBe(false)
+    expect(fakeStorage.getItem(payloadKey)).toBe(rawPayload)
+  })
+
+  it('drops a recovered cache when the rollback index itself cannot persist', async () => {
+    const store = await freshStore()
+    const aPath = 'workflows/a.json'
+    const bPath = 'workflows/b.json'
+    expect(
+      store.saveDraft(aPath, '{"id":"a"}', {
+        name: 'a',
+        isTemporary: false
+      })
+    ).toBe(true)
+    expect(
+      store.saveDraft(bPath, '{"id":"b"}', {
+        name: 'b',
+        isTemporary: false
+      })
+    ).toBe(true)
+
+    const aKey = hashPath(aPath)
+    const bKey = hashPath(bPath)
+    const targetPath = 'workflows/rollback-index-failure.json'
+    const targetKey = StorageKeys.draftPayload(targetPath, 'personal')
+    const targetDraftKey = hashPath(targetPath)
+    const indexKey = StorageKeys.draftIndex('personal')
+    let targetWrites = 0
+    let rejectedRollbackIndex = false
+
+    fakeStorage.shouldFailWrite = (key, value) => {
+      if (key === targetKey) {
+        targetWrites++
+        return targetWrites === 1
+      }
+      if (key !== indexKey) return false
+
+      const index = JSON.parse(value) as {
+        entries?: Record<string, unknown>
+      }
+      if (index.entries?.[targetDraftKey]) return true
+      if (
+        targetWrites > 1 &&
+        index.entries?.[aKey] &&
+        index.entries?.[bKey] &&
+        !rejectedRollbackIndex
+      ) {
+        rejectedRollbackIndex = true
+        return true
+      }
+      return false
+    }
+
+    expect(
+      store.saveDraft(targetPath, '{"id":"target"}', {
+        name: 'target',
+        isTemporary: false
+      })
+    ).toBe(false)
+    expect(rejectedRollbackIndex).toBe(true)
+
+    const durableIndex = JSON.parse(fakeStorage.getItem(indexKey)!) as {
+      entries: Record<string, unknown>
+    }
+    expect(durableIndex.entries[aKey]).toBeUndefined()
+    expect(durableIndex.entries[bKey]).toBeDefined()
+
+    fakeStorage.shouldFailWrite = () => false
+    expect(
+      store.saveDraft('workflows/after-rollback.json', '{"id":"after"}', {
+        name: 'after',
+        isTemporary: false
+      })
+    ).toBe(true)
+    expect(store.getDraft(aPath)).toBeNull()
+    expect(store.getDraft(bPath)?.data).toBe('{"id":"b"}')
+  })
+
+  it('deletes payloads evicted by the final quota-retry upsert', async () => {
+    const paths = Array.from(
+      { length: MAX_DRAFTS + 1 },
+      (_, index) => `workflows/over-limit-${index}.json`
+    )
+    const order: string[] = []
+    const entries: Record<
+      string,
+      {
+        path: string
+        name: string
+        isTemporary: boolean
+        updatedAt: number
+      }
+    > = {}
+    const indexKey = StorageKeys.draftIndex('personal')
+
+    for (const [index, path] of paths.entries()) {
+      const draftKey = hashPath(path)
+      order.push(draftKey)
+      entries[draftKey] = {
+        path,
+        name: `over-limit-${index}`,
+        isTemporary: false,
+        updatedAt: index + 1
+      }
+      fakeStorage.setItem(
+        StorageKeys.draftPayload(path, 'personal'),
+        JSON.stringify({ data: `{"id":${index}}`, updatedAt: index + 1 })
+      )
+    }
+    fakeStorage.setItem(
+      indexKey,
+      JSON.stringify({ v: 2, updatedAt: 1, order, entries })
+    )
+
+    const store = await freshStore()
+    const targetPath = 'workflows/quota-retry.json'
+    const targetPayloadKey = StorageKeys.draftPayload(targetPath, 'personal')
+    let targetWrites = 0
+    fakeStorage.shouldFailWrite = (key) => {
+      if (key !== targetPayloadKey) return false
+      targetWrites++
+      return targetWrites === 1
+    }
+
+    expect(
+      store.saveDraft(targetPath, '{"id":"target"}', {
+        name: 'target',
+        isTemporary: false
+      })
+    ).toBe(true)
+
+    expect(
+      fakeStorage.getItem(StorageKeys.draftPayload(paths[0], 'personal'))
+    ).toBeNull()
+    expect(
+      fakeStorage.getItem(StorageKeys.draftPayload(paths[1], 'personal'))
+    ).toBeNull()
+    const persistedIndex = JSON.parse(fakeStorage.getItem(indexKey)!) as {
+      order: string[]
+    }
+    expect(persistedIndex.order).toHaveLength(MAX_DRAFTS)
+    expect(store.getDraft(targetPath)?.data).toBe('{"id":"target"}')
+  })
+
   it('does not delete an LRU draft before the replacement index commits', async () => {
     const store = await freshStore()
     for (let i = 0; i < MAX_DRAFTS; i++) {

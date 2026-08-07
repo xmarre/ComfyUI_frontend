@@ -92,6 +92,42 @@ export function writeIndex(workspaceId: string, index: DraftIndexV2): boolean {
   }
 }
 
+function draftPayloadStorageKey(workspaceId: string, draftKey: string): string {
+  return `${StorageKeys.prefixes.draftPayload}${workspaceId}:${draftKey}`
+}
+
+/** Reads the exact serialized draft payload without parsing workflow data. */
+export function readPayloadRaw(
+  workspaceId: string,
+  draftKey: string
+): string | null {
+  try {
+    return localStorage.getItem(draftPayloadStorageKey(workspaceId, draftKey))
+  } catch {
+    return null
+  }
+}
+
+/** Writes an exact serialized draft payload. Used for lossless rollback. */
+export function writePayloadRaw(
+  workspaceId: string,
+  draftKey: string,
+  serializedPayload: string
+): boolean {
+  if (workflowWritesBlocked) return false
+
+  try {
+    localStorage.setItem(
+      draftPayloadStorageKey(workspaceId, draftKey),
+      serializedPayload
+    )
+    return true
+  } catch (error) {
+    if (isQuotaExceeded(error)) return false
+    throw error
+  }
+}
+
 /**
  * Reads a draft payload from localStorage.
  */
@@ -99,11 +135,10 @@ export function readPayload(
   workspaceId: string,
   draftKey: string
 ): DraftPayloadV2 | null {
-  try {
-    const key = `${StorageKeys.prefixes.draftPayload}${workspaceId}:${draftKey}`
-    const json = localStorage.getItem(key)
-    if (!json) return null
+  const json = readPayloadRaw(workspaceId, draftKey)
+  if (json === null) return null
 
+  try {
     return JSON.parse(json) as DraftPayloadV2
   } catch {
     return null
@@ -118,16 +153,7 @@ export function writePayload(
   draftKey: string,
   payload: DraftPayloadV2
 ): boolean {
-  if (workflowWritesBlocked) return false
-
-  try {
-    const key = `${StorageKeys.prefixes.draftPayload}${workspaceId}:${draftKey}`
-    localStorage.setItem(key, JSON.stringify(payload))
-    return true
-  } catch (error) {
-    if (isQuotaExceeded(error)) return false
-    throw error
-  }
+  return writePayloadRaw(workspaceId, draftKey, JSON.stringify(payload))
 }
 
 /**

@@ -30,8 +30,10 @@ import {
   isStorageAvailable,
   readIndex,
   readPayload,
+  readPayloadRaw,
   writeIndex,
-  writePayload
+  writePayload,
+  writePayloadRaw
 } from '../base/storageIO'
 import { api } from '@/scripts/api'
 import { app as comfyApp } from '@/scripts/app'
@@ -80,7 +82,9 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
 
   /**
    * Temporarily suppresses draft writes initiated by graph-load lifecycle hooks.
-   * The returned resume function is idempotent and supports nested pauses.
+   * This is caller-coordination state rather than a storage mutex: lifecycle
+   * callers check isPersistencePaused() before invoking the low-level saveDraft
+   * primitive. The returned resume function is idempotent and supports nesting.
    */
   function pausePersistence(): () => void {
     persistencePauseDepth++
@@ -149,7 +153,9 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     // loadIndex() runs orphan cleanup on cache miss, which would
     // delete a payload written before the index is updated.
     const index = loadIndex()
-    const previousPayload = readPayload(workspaceId, draftKey)
+    // Rollback only needs the exact previous bytes. Avoid parsing the full
+    // serialized workflow on every autosave and preserve malformed bytes too.
+    const previousPayload = readPayloadRaw(workspaceId, draftKey)
 
     // Write payload before persisting the updated index.
     const payloadWritten = writePayload(workspaceId, draftKey, {
@@ -183,10 +189,10 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
   function restoreTargetPayload(
     workspaceId: string,
     draftKey: string,
-    previousPayload: DraftPayloadV2 | null
+    previousPayload: string | null
   ): void {
-    if (previousPayload) {
-      writePayload(workspaceId, draftKey, previousPayload)
+    if (previousPayload !== null) {
+      writePayloadRaw(workspaceId, draftKey, previousPayload)
     } else {
       deletePayload(workspaceId, draftKey)
     }
@@ -226,9 +232,13 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     originalIndex: DraftIndexV2,
     evictedPayloads: Map<string, DraftPayloadV2>
   ): void {
+    let payloadRestoreFailed = false
     for (const [draftKey, payload] of evictedPayloads) {
-      if (!readPayload(workspaceId, draftKey)) {
-        writePayload(workspaceId, draftKey, payload)
+      if (
+        !readPayload(workspaceId, draftKey) &&
+        !writePayload(workspaceId, draftKey, payload)
+      ) {
+        payloadRestoreFailed = true
       }
     }
 
@@ -236,8 +246,22 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     // index entry whose payload could not be restored.
     const payloadKeys = new Set(getPayloadKeys(workspaceId))
     const recoveredIndex = removeOrphanedEntries(originalIndex, payloadKeys)
-    indexCacheByWorkspace.value[workspaceId] = recoveredIndex
-    writeIndex(workspaceId, recoveredIndex)
+    if (writeIndex(workspaceId, recoveredIndex)) {
+      indexCacheByWorkspace.value[workspaceId] = recoveredIndex
+      if (payloadRestoreFailed) {
+        console.error(
+          '[Workflow Drafts] Quota rollback could not restore every evicted payload'
+        )
+      }
+    } else {
+      // The durable index is now the source of truth. Keeping recoveredIndex in
+      // cache would make drafts appear restored until reload even though its
+      // ownership update never reached storage.
+      delete indexCacheByWorkspace.value[workspaceId]
+      console.error(
+        '[Workflow Drafts] Failed to restore draft index after quota rollback'
+      )
+    }
   }
 
   /**
@@ -248,7 +272,7 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     path: string,
     data: string,
     meta: DraftMeta,
-    previousPayload: DraftPayloadV2 | null
+    previousPayload: string | null
   ): boolean {
     const workspaceId = currentWorkspaceId()
     const originalIndex = loadIndex()
@@ -309,13 +333,16 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
 
       const now = Date.now()
       if (writePayload(workspaceId, draftKey, { data, updatedAt: now })) {
-        const { index: finalIndex } = upsertEntry(
+        const { index: finalIndex, evicted } = upsertEntry(
           currentIndex,
           path,
           { ...meta, updatedAt: now },
           MAX_DRAFTS
         )
-        if (persistIndex(finalIndex)) return true
+        if (persistIndex(finalIndex)) {
+          deletePayloads(workspaceId, evicted)
+          return true
+        }
 
         restoreTargetPayload(workspaceId, draftKey, previousPayload)
         rollbackQuotaEvictions(workspaceId, originalIndex, evictedPayloads)

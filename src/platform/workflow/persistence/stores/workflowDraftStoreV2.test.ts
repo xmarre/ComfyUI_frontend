@@ -58,6 +58,9 @@ describe('workflowDraftStoreV2', () => {
       store.markSaveSucceeded()
       expect(store.shouldNotifySaveFailure()).toBe(true)
       expect(store.shouldNotifySaveFailure()).toBe(false)
+
+      store.reset()
+      expect(store.shouldNotifySaveFailure()).toBe(true)
     })
   })
 

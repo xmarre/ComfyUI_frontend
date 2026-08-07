@@ -27,7 +27,8 @@ class FaultInjectingStorage implements Storage {
 
   constructor(
     source: Storage,
-    private readonly writeError: (key: string, value: string) => Error | null
+    private readonly writeError: (key: string, value: string) => Error | null,
+    private readonly readError: (key: string) => Error | null = () => null
   ) {
     for (let i = 0; i < source.length; i++) {
       const key = source.key(i)
@@ -47,6 +48,8 @@ class FaultInjectingStorage implements Storage {
   }
 
   getItem(key: string): string | null {
+    const error = this.readError(key)
+    if (error) throw error
     return this.values.get(key) ?? null
   }
 
@@ -66,10 +69,15 @@ class FaultInjectingStorage implements Storage {
 }
 
 function installFaultStorage(
-  writeError: (key: string, value: string) => Error | null
+  writeError: (key: string, value: string) => Error | null,
+  readError: (key: string) => Error | null = () => null
 ): () => void {
   const original = globalThis.localStorage
-  const faultStorage = new FaultInjectingStorage(original, writeError)
+  const faultStorage = new FaultInjectingStorage(
+    original,
+    writeError,
+    readError
+  )
   Object.defineProperty(globalThis, 'localStorage', {
     value: faultStorage,
     configurable: true
@@ -222,6 +230,26 @@ describe('migrateV1toV2', () => {
 
       expect(migrateV1toV2(personalWorkspace)).toBe(-1)
       expect(localStorage.getItem('workflow')).toBe('{"unique":"legacy"}')
+    })
+
+    it('degrades safely when localStorage reads are blocked', () => {
+      const restoreStorage = installFaultStorage(
+        () => null,
+        () => new DOMException('Storage blocked', 'SecurityError')
+      )
+
+      try {
+        expect(migrateV1toV2(personalWorkspace)).toBe(-1)
+        expect(isV2MigrationComplete(personalWorkspace)).toBe(false)
+        expect(getMigrationStatus(personalWorkspace)).toEqual({
+          v1Exists: false,
+          v2Exists: false,
+          v1DraftCount: 0,
+          v2DraftCount: 0
+        })
+      } finally {
+        restoreStorage()
+      }
     })
   })
 

@@ -94,10 +94,17 @@ function readV1Sources(workspaceId: string): V1ReadResult {
   let hasMalformedSource = false
 
   for (const { draftsKey, orderKey } of v1KeyPairs(workspaceId)) {
-    const rawDrafts = localStorage.getItem(draftsKey)
-    if (rawDrafts === null) continue
+    let rawDrafts: string | null
+    let rawOrder: string | null
+    try {
+      rawDrafts = localStorage.getItem(draftsKey)
+      if (rawDrafts === null) continue
+      rawOrder = localStorage.getItem(orderKey)
+    } catch {
+      hasMalformedSource = true
+      continue
+    }
 
-    const rawOrder = localStorage.getItem(orderKey)
     try {
       const parsed = JSON.parse(rawDrafts) as unknown
       if (
@@ -195,9 +202,13 @@ function mergedV1Data(sources: V1StorageSource[]): {
 }
 
 function hasLegacyDraftStorage(workspaceId: string): boolean {
-  return v1KeyPairs(workspaceId).some(
-    ({ draftsKey }) => localStorage.getItem(draftsKey) !== null
-  )
+  try {
+    return v1KeyPairs(workspaceId).some(
+      ({ draftsKey }) => localStorage.getItem(draftsKey) !== null
+    )
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -354,9 +365,19 @@ function redundantLegacyWorkflowEntry(
   if (legacyWorkflow === null) return null
 
   for (const draftKey of finalIndex.order) {
+    // Staged migration payloads are already available as parsed snapshots.
+    // Check them before touching localStorage so quota-recovery candidates do
+    // not get parsed again during the legacy-singleton redundancy scan.
+    const pendingPayload = payloadsToWrite.get(draftKey)
+    if (pendingPayload) {
+      if (pendingPayload.data === legacyWorkflow) {
+        return { key: 'workflow', value: legacyWorkflow }
+      }
+      continue
+    }
+
     const currentPayload = readPayload(workspaceId, draftKey)
-    const data = currentPayload?.data ?? payloadsToWrite.get(draftKey)?.data
-    if (data === legacyWorkflow) {
+    if (currentPayload?.data === legacyWorkflow) {
       return { key: 'workflow', value: legacyWorkflow }
     }
   }
@@ -447,7 +468,11 @@ function cleanupV1TabState(workspaceId: string, clientId?: string): void {
  * restored if the V2 commit still fails.
  *
  * @returns Number of V1 payloads recovered into V2, 0 for an empty migration,
- * or -1 when no migration is needed or recovery could not be committed.
+ * or -1 for a non-mutating outcome. The -1 result intentionally covers both a
+ * healthy no-op and a preserved-data recovery failure: the only current caller
+ * needs to know whether V2 storage changed so it can invalidate its cache.
+ * Failed recovery keeps legacy data in place and is retried on the next
+ * persistence initialization.
  */
 export function migrateV1toV2(
   workspaceId: string = getWorkspaceId(),
