@@ -167,8 +167,9 @@ export function useWorkflowPersistenceV2() {
     debouncedPersist.cancel()
     persistCurrentWorkflow()
   }
-  const unregisterPersistenceFlush =
-    registerWorkflowPersistenceFlush(flushPendingPersistence)
+  const unregisterPersistenceFlush = registerWorkflowPersistenceFlush(
+    flushPendingPersistence
+  )
   window.addEventListener('pagehide', flushPendingPersistence)
 
   const runWithPersistencePaused = async <T>(

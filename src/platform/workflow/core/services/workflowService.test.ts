@@ -67,7 +67,13 @@ const { mockConfirm, mockTrackWorkflowSaved } = vi.hoisted(() => ({
 }))
 
 const draftStoreMocks = vi.hoisted(() => ({
-  saveDraft: vi.fn(() => true),
+  saveDraft: vi.fn(
+    (
+      _path: string,
+      _data: string,
+      _meta: { name: string; isTemporary: boolean }
+    ) => true
+  ),
   getDraft: vi.fn(),
   removeDraft: vi.fn(),
   markDraftUsed: vi.fn(),
@@ -372,7 +378,6 @@ describe('useWorkflowService', () => {
         }
       )
     })
-
 
     it('should persist the deactivated workflow viewport in its recovery draft', () => {
       vi.spyOn(useSettingStore(), 'get').mockImplementation((key: string) => {
