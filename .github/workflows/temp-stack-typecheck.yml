@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - codex/10841-14897-typecheck-run
+  pull_request:
+    branches:
+      - codex/10841-14897-typecheck-run
 
 jobs:
   typecheck:
