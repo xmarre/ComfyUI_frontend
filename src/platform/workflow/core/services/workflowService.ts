@@ -87,7 +87,7 @@ export const useWorkflowService = () => {
     // the workflow dirty or enter undo history).
     const draftState: ComfyWorkflowJSON = {
       ...activeState,
-      extra: activeState.extra ? { ...activeState.extra } : {}
+      ...(activeState.extra ? { extra: { ...activeState.extra } } : {})
     }
     if (settingStore.get('Comfy.EnableWorkflowViewRestore')) {
       const viewState = activeWorkflow.changeTracker?.ds ?? app.canvas.ds

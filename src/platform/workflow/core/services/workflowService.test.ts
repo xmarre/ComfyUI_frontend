@@ -334,6 +334,23 @@ describe('useWorkflowService', () => {
       expect(draftStoreMocks.saveDraft).not.toHaveBeenCalled()
     })
 
+    it('should skip recovery serialization for a clean persisted workflow', () => {
+      vi.spyOn(useSettingStore(), 'get').mockImplementation((key: string) => {
+        return key === 'Comfy.Workflow.Persist'
+      })
+      const activeWorkflow = createModeTestWorkflow({
+        path: 'workflows/clean.json'
+      })
+      workflowStore.activeWorkflow = activeWorkflow
+
+      useWorkflowService().beforeLoadNewGraph()
+
+      expect(draftStoreMocks.removeDraft).toHaveBeenCalledWith(
+        activeWorkflow.path
+      )
+      expect(draftStoreMocks.saveDraft).not.toHaveBeenCalled()
+    })
+
     it('should save active workflow state through the V2 draft store', () => {
       vi.spyOn(useSettingStore(), 'get').mockImplementation((key: string) => {
         return key === 'Comfy.Workflow.Persist'
@@ -341,6 +358,7 @@ describe('useWorkflowService', () => {
       const activeWorkflow = createModeTestWorkflow({
         path: 'workflows/test.json'
       })
+      activeWorkflow.isModified = true
       workflowStore.activeWorkflow = activeWorkflow
 
       useWorkflowService().beforeLoadNewGraph()
@@ -355,6 +373,34 @@ describe('useWorkflowService', () => {
       )
     })
 
+
+    it('should persist the deactivated workflow viewport in its recovery draft', () => {
+      vi.spyOn(useSettingStore(), 'get').mockImplementation((key: string) => {
+        return (
+          key === 'Comfy.Workflow.Persist' ||
+          key === 'Comfy.EnableWorkflowViewRestore'
+        )
+      })
+      const activeWorkflow = createModeTestWorkflow({
+        path: 'workflows/viewport.json'
+      })
+      activeWorkflow.isModified = true
+      activeWorkflow.changeTracker!.ds = {
+        scale: 0.65,
+        offset: [120, -30]
+      }
+      workflowStore.activeWorkflow = activeWorkflow
+
+      useWorkflowService().beforeLoadNewGraph()
+
+      const savedData = draftStoreMocks.saveDraft.mock.calls.at(-1)?.[1]
+      expect(JSON.parse(savedData as string)).toMatchObject({
+        extra: {
+          ds: { scale: 0.65, offset: [120, -30] }
+        }
+      })
+    })
+
     it('should show an error toast when the V2 draft store cannot save', () => {
       vi.spyOn(useSettingStore(), 'get').mockImplementation((key: string) => {
         return key === 'Comfy.Workflow.Persist'
@@ -364,6 +410,7 @@ describe('useWorkflowService', () => {
       const activeWorkflow = createModeTestWorkflow({
         path: 'workflows/test.json'
       })
+      activeWorkflow.isModified = true
       workflowStore.activeWorkflow = activeWorkflow
 
       useWorkflowService().beforeLoadNewGraph()
@@ -390,6 +437,7 @@ describe('useWorkflowService', () => {
       const activeWorkflow = createModeTestWorkflow({
         path: 'workflows/test.json'
       })
+      activeWorkflow.isModified = true
       workflowStore.activeWorkflow = activeWorkflow
 
       const service = useWorkflowService()
@@ -414,6 +462,7 @@ describe('useWorkflowService', () => {
       const activeWorkflow = createModeTestWorkflow({
         path: 'workflows/test.json'
       })
+      activeWorkflow.isModified = true
       workflowStore.activeWorkflow = activeWorkflow
 
       try {

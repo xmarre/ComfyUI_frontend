@@ -141,7 +141,8 @@ type GraphChangedHandler = (() => void) | null
 const mocks = vi.hoisted(() => {
   const state = {
     graphChangedHandler: null as GraphChangedHandler,
-    currentGraph: {} as Record<string, unknown>
+    currentGraph: {} as Record<string, unknown>,
+    canvasDs: { scale: 1, offset: [0, 0] as [number, number] }
   }
   const serializeMock = vi.fn(() => state.currentGraph)
   const loadGraphDataMock = vi.fn()
@@ -167,7 +168,7 @@ vi.mock('@/scripts/app', () => ({
       serialize: () => mocks.serializeMock()
     },
     loadGraphData: (...args: unknown[]) => mocks.loadGraphDataMock(...args),
-    canvas: {}
+    canvas: { ds: mocks.state.canvasDs }
   }
 }))
 
@@ -188,6 +189,8 @@ describe('useWorkflowPersistenceV2', () => {
     settingMocks.values = {}
     mocks.state.graphChangedHandler = null
     mocks.state.currentGraph = { initial: true }
+    mocks.state.canvasDs.scale = 1
+    mocks.state.canvasDs.offset = [0, 0]
     mocks.serializeMock.mockImplementation(() => mocks.state.currentGraph)
     mocks.apiMock.clientId = 'test-client'
     mocks.apiMock.initialClientId = 'test-client'
@@ -360,6 +363,7 @@ describe('useWorkflowPersistenceV2', () => {
 
       mocks.state.currentGraph = { nodes: [{ id: 'first-pending' }] }
       mocks.state.graphChangedHandler?.()
+      mocks.serializeMock.mockClear()
 
       const second = workflowStore.createTemporary('second-transition.json')
       const loadedSecond = await second.load()
@@ -367,6 +371,12 @@ describe('useWorkflowPersistenceV2', () => {
       mocks.state.currentGraph = secondGraph
       workflowStore.activeWorkflow = loadedSecond
       await nextTick()
+
+      // Activation itself must stay off the synchronous serialization/storage
+      // hot path. The temporary workflow is persisted by the debounce instead.
+      expect(saveDraftSpy).not.toHaveBeenCalled()
+      expect(mocks.serializeMock).not.toHaveBeenCalled()
+
       await vi.runAllTimersAsync()
 
       expect(saveDraftSpy).toHaveBeenCalledTimes(1)
@@ -383,6 +393,37 @@ describe('useWorkflowPersistenceV2', () => {
         expect.any(String),
         expect.any(Object)
       )
+    })
+
+    it('flushes the latest viewport into a temporary recovery draft on pagehide', async () => {
+      settingMocks.values['Comfy.EnableWorkflowViewRestore'] = true
+      await loadBlankIntoActiveWorkflow()
+
+      const workflowStore = useWorkflowStore()
+      const activeWorkflow = workflowStore.activeWorkflow!
+      const draftStore = useWorkflowDraftStoreV2()
+      const saveDraftSpy = vi.spyOn(draftStore, 'saveDraft')
+      saveDraftSpy.mockReturnValue(true)
+
+      mountWorkflowPersistence()
+      mocks.state.currentGraph = {
+        nodes: [{ id: 'viewport' }],
+        extra: { preserved: true }
+      }
+      mocks.state.canvasDs.scale = 0.7
+      mocks.state.canvasDs.offset = [135, -48]
+
+      window.dispatchEvent(new Event('pagehide'))
+
+      expect(saveDraftSpy).toHaveBeenCalledOnce()
+      const [path, savedJson] = saveDraftSpy.mock.calls[0]
+      expect(path).toBe(activeWorkflow.path)
+      expect(JSON.parse(savedJson)).toMatchObject({
+        extra: {
+          preserved: true,
+          ds: { scale: 0.7, offset: [135, -48] }
+        }
+      })
     })
   })
 
