@@ -62,29 +62,61 @@ export const useWorkflowService = () => {
   }
 
   const persistActiveWorkflowDraft = (activeWorkflow: ComfyWorkflow) => {
-    if (!settingStore.get('Comfy.Workflow.Persist') || !activeWorkflow.path) {
+    if (
+      workflowDraftStore.isPersistencePaused() ||
+      !settingStore.get('Comfy.Workflow.Persist') ||
+      !activeWorkflow.path
+    ) {
+      return
+    }
+
+    // Persisted clean workflows have no recovery state. Skipping them avoids
+    // a full JSON serialization/localStorage transaction on ordinary tab
+    // switches and prevents a clean workflow from being resurrected as dirty.
+    if (!activeWorkflow.isTemporary && !activeWorkflow.isModified) {
+      workflowDraftStore.removeDraft(activeWorkflow.path)
       return
     }
 
     const activeState = activeWorkflow.activeState
     if (!activeState) return
 
+    // Drafts are the authoritative startup state for temporary/modified
+    // workflows. Preserve the viewport captured by deactivate() without
+    // mutating ChangeTracker.activeState (viewport-only changes must not make
+    // the workflow dirty or enter undo history).
+    const draftState: ComfyWorkflowJSON = {
+      ...activeState,
+      extra: activeState.extra ? { ...activeState.extra } : {}
+    }
+    if (settingStore.get('Comfy.EnableWorkflowViewRestore')) {
+      const viewState = activeWorkflow.changeTracker?.ds ?? app.canvas.ds
+      const { offset, scale } = viewState
+      const [x, y] = offset
+      draftState.extra ??= {}
+      draftState.extra.ds = { scale, offset: [x, y] }
+    }
+
     try {
       const saved = workflowDraftStore.saveDraft(
         activeWorkflow.path,
-        JSON.stringify(activeState),
+        JSON.stringify(draftState),
         {
           name: activeWorkflow.key,
           isTemporary: activeWorkflow.isTemporary
         }
       )
 
-      if (!saved) {
+      if (saved) {
+        workflowDraftStore.markSaveSucceeded()
+      } else if (workflowDraftStore.shouldNotifySaveFailure()) {
         showFailedToSaveDraftToast()
       }
     } catch (err) {
       console.error('Failed to persist active workflow draft', err)
-      showFailedToSaveDraftToast()
+      if (workflowDraftStore.shouldNotifySaveFailure()) {
+        showFailedToSaveDraftToast()
+      }
     }
   }
 
