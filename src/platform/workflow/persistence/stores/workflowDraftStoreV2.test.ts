@@ -18,6 +18,35 @@ vi.mock('@/scripts/app', () => ({
 }))
 
 describe('workflowDraftStoreV2', () => {
+  describe('shared persistence control', () => {
+    it('supports nested idempotent persistence pauses', () => {
+      const store = useWorkflowDraftStoreV2()
+      const resumeOuter = store.pausePersistence()
+      const resumeInner = store.pausePersistence()
+
+      expect(store.isPersistencePaused()).toBe(true)
+      resumeInner()
+      expect(store.isPersistencePaused()).toBe(true)
+      resumeInner()
+      expect(store.isPersistencePaused()).toBe(true)
+      resumeOuter()
+      expect(store.isPersistencePaused()).toBe(false)
+    })
+
+    it('deduplicates one continuous failure episode across workflow paths', () => {
+      const store = useWorkflowDraftStoreV2()
+
+      expect(store.shouldNotifySaveFailure()).toBe(true)
+      expect(store.shouldNotifySaveFailure()).toBe(false)
+
+      store.markSaveSucceeded()
+      expect(store.shouldNotifySaveFailure()).toBe(true)
+      expect(store.shouldNotifySaveFailure()).toBe(false)
+
+      store.reset()
+      expect(store.shouldNotifySaveFailure()).toBe(true)
+    })
+  })
   describe('saveDraft', () => {
     it('saves draft to localStorage with separate payload', () => {
       const store = useWorkflowDraftStoreV2()
