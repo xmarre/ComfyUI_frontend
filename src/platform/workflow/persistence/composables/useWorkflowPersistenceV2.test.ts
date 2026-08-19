@@ -378,7 +378,8 @@ describe('useWorkflowPersistenceV2', () => {
         JSON.stringify(secondGraph),
         {
           name: second.key,
-          isTemporary: true
+          isTemporary: true,
+          isModified: second.isModified
         }
       )
       expect(saveDraftSpy).not.toHaveBeenCalledWith(
