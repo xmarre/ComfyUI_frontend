@@ -61,7 +61,7 @@ function quotaError(): DOMException {
   return new DOMException('Quota exceeded', 'QuotaExceededError')
 }
 
-describe('workflowDraftStoreV2 rollback safety', () => {
+describe('workflowDraftStoreV2 overwrite safety', () => {
   beforeEach(() => {
     setActivePinia(createTestingPinia({ stubActions: false }))
     realLocalStorage = globalThis.localStorage
@@ -84,7 +84,33 @@ describe('workflowDraftStoreV2 rollback safety', () => {
     sessionStorage.clear()
   })
 
-  it('retries exact target rollback after removing an uncommitted replacement', async () => {
+  it('does not read the existing workflow payload on a successful overwrite', async () => {
+    const store = await freshStore()
+    const path = 'workflows/target.json'
+    const payloadKey = StorageKeys.draftPayload(path, 'personal')
+
+    expect(
+      store.saveDraft(path, '{"version":1}', {
+        name: 'target',
+        isTemporary: false
+      })
+    ).toBe(true)
+
+    const getItemSpy = vi.spyOn(storage, 'getItem')
+    getItemSpy.mockClear()
+
+    expect(
+      store.saveDraft(path, '{"version":2}', {
+        name: 'target',
+        isTemporary: false
+      })
+    ).toBe(true)
+
+    expect(getItemSpy).not.toHaveBeenCalledWith(payloadKey)
+    expect(store.getDraft(path)?.data).toBe('{"version":2}')
+  })
+
+  it('leaves the committed payload untouched when the metadata write fails', async () => {
     const store = await freshStore()
     const path = 'workflows/target.json'
     const payloadKey = StorageKeys.draftPayload(path, 'personal')
@@ -98,21 +124,44 @@ describe('workflowDraftStoreV2 rollback safety', () => {
     ).toBe(true)
     const previousPayload = storage.getItem(payloadKey)!
 
-    let indexFailed = false
-    let directRollbackFailed = false
-    storage.writeError = (key, value) => {
-      if (key === indexKey && !indexFailed) {
-        indexFailed = true
-        return quotaError()
+    storage.writeError = (key) => (key === indexKey ? quotaError() : null)
+
+    expect(
+      store.saveDraft(path, '{"version":2}', {
+        name: 'target',
+        isTemporary: false
+      })
+    ).toBe(false)
+
+    expect(storage.getItem(payloadKey)).toBe(previousPayload)
+    storage.writeError = () => null
+    expect(store.getDraft(path)?.data).toBe('{"version":1}')
+  })
+
+  it('keeps the old payload recoverable if restoring metadata after quota failure also fails', async () => {
+    const store = await freshStore()
+    const path = 'workflows/target.json'
+    const payloadKey = StorageKeys.draftPayload(path, 'personal')
+    const indexKey = StorageKeys.draftIndex('personal')
+
+    expect(
+      store.saveDraft(path, '{"version":1}', {
+        name: 'target',
+        isTemporary: false
+      })
+    ).toBe(true)
+    const previousPayload = storage.getItem(payloadKey)!
+
+    let payloadWrites = 0
+    let indexWrites = 0
+    storage.writeError = (key) => {
+      if (key === indexKey) {
+        indexWrites++
+        if (indexWrites === 2) return quotaError()
       }
-      if (
-        key === payloadKey &&
-        indexFailed &&
-        value === previousPayload &&
-        !directRollbackFailed
-      ) {
-        directRollbackFailed = true
-        return quotaError()
+      if (key === payloadKey) {
+        payloadWrites++
+        if (payloadWrites === 1) return quotaError()
       }
       return null
     }
@@ -124,18 +173,19 @@ describe('workflowDraftStoreV2 rollback safety', () => {
       })
     ).toBe(false)
 
-    expect(indexFailed).toBe(true)
-    expect(directRollbackFailed).toBe(true)
+    expect(payloadWrites).toBe(1)
+    expect(indexWrites).toBe(2)
     expect(storage.getItem(payloadKey)).toBe(previousPayload)
+
+    storage.writeError = () => null
     expect(store.getDraft(path)?.data).toBe('{"version":1}')
   })
 
-  it('continues quota rollback after target restoration throws', async () => {
+  it('takes the rollback snapshot only after an overwrite hits quota', async () => {
     const store = await freshStore()
     const targetPath = 'workflows/target.json'
     const evictedPath = 'workflows/evicted.json'
     const targetPayloadKey = StorageKeys.draftPayload(targetPath, 'personal')
-    const indexKey = StorageKeys.draftIndex('personal')
 
     expect(
       store.saveDraft(targetPath, '{"version":1}', {
@@ -150,17 +200,13 @@ describe('workflowDraftStoreV2 rollback safety', () => {
       })
     ).toBe(true)
 
+    const getItemSpy = vi.spyOn(storage, 'getItem')
+    getItemSpy.mockClear()
+
     let targetWrites = 0
-    let indexWrites = 0
     storage.writeError = (key) => {
-      if (key === targetPayloadKey) {
-        targetWrites++
-        if (targetWrites === 1) return quotaError()
-        if (targetWrites === 3) return new Error('rollback interrupted')
-      }
-      if (key === indexKey) {
-        indexWrites++
-        if (indexWrites === 2) return quotaError()
+      if (key === targetPayloadKey && targetWrites++ === 0) {
+        return quotaError()
       }
       return null
     }
@@ -170,49 +216,9 @@ describe('workflowDraftStoreV2 rollback safety', () => {
         name: 'target',
         isTemporary: false
       })
-    ).toBe(false)
-
-    expect(targetWrites).toBe(4)
-    expect(indexWrites).toBe(3)
-    expect(store.getDraft(targetPath)?.data).toBe('{"version":1}')
-    expect(store.getDraft(evictedPath)?.data).toBe('{"id":"evicted"}')
-  })
-
-  it('drops stale cache state when target rollback cannot be completed', async () => {
-    const store = await freshStore()
-    const path = 'workflows/unrecoverable-target.json'
-    const payloadKey = StorageKeys.draftPayload(path, 'personal')
-    const indexKey = StorageKeys.draftIndex('personal')
-
-    expect(
-      store.saveDraft(path, '{"version":1}', {
-        name: 'target',
-        isTemporary: false
-      })
     ).toBe(true)
-    const previousPayload = storage.getItem(payloadKey)!
 
-    let indexFailed = false
-    storage.writeError = (key, value) => {
-      if (key === indexKey && !indexFailed) {
-        indexFailed = true
-        return quotaError()
-      }
-      if (key === payloadKey && indexFailed && value === previousPayload) {
-        return quotaError()
-      }
-      return null
-    }
-
-    expect(
-      store.saveDraft(path, '{"version":2}', {
-        name: 'target',
-        isTemporary: false
-      })
-    ).toBe(false)
-    expect(storage.getItem(payloadKey)).toBeNull()
-
-    storage.writeError = () => null
-    expect(store.getDraft(path)).toBeNull()
+    expect(getItemSpy).toHaveBeenCalledWith(targetPayloadKey)
+    expect(store.getDraft(targetPath)?.data).toBe('{"version":2}')
   })
 })
