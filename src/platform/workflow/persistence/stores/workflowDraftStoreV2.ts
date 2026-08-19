@@ -153,9 +153,57 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     // loadIndex() runs orphan cleanup on cache miss, which would
     // delete a payload written before the index is updated.
     const index = loadIndex()
-    // Rollback only needs the exact previous bytes. Avoid parsing the full
-    // serialized workflow on every autosave and preserve malformed bytes too.
-    const previousPayload = readPayloadRaw(workspaceId, draftKey)
+    const existingEntry = index.entries[draftKey]
+    const { index: newIndex, evicted } = upsertEntry(
+      index,
+      path,
+      { ...meta, updatedAt: now },
+      MAX_DRAFTS
+    )
+
+    // Overwriting an indexed draft is the normal autosave/tab-switch path.
+    // Commit its small metadata update first so we do not synchronously read
+    // and copy the entire previous workflow payload solely for a rollback that
+    // is only needed if a later index write fails. localStorage.setItem() is
+    // atomic: if the payload write fails, the previous payload is unchanged.
+    if (existingEntry && evicted.length === 0) {
+      if (!persistIndex(newIndex)) {
+        indexCacheByWorkspace.value[workspaceId] = index
+        return false
+      }
+
+      let payloadWritten: boolean
+      try {
+        payloadWritten = writePayload(workspaceId, draftKey, {
+          data,
+          updatedAt: now
+        })
+      } catch (error) {
+        if (!persistIndex(index)) {
+          delete indexCacheByWorkspace.value[workspaceId]
+        }
+        throw error
+      }
+
+      if (payloadWritten) return true
+
+      // A failed setItem leaves the old payload intact. Restore the old index
+      // before entering quota recovery, then take the expensive raw snapshot
+      // only on this exceptional path where rollback may actually need it.
+      if (!persistIndex(index)) {
+        delete indexCacheByWorkspace.value[workspaceId]
+        return false
+      }
+      const previousPayload = readPayloadRaw(workspaceId, draftKey)
+      return handleQuotaExceeded(path, data, meta, previousPayload)
+    }
+
+    // New/unindexed targets can be rolled back by deletion, so there is no
+    // committed payload to snapshot on the successful path. Keep the raw read
+    // for the unusual indexed+eviction case only.
+    const previousPayload = existingEntry
+      ? readPayloadRaw(workspaceId, draftKey)
+      : null
 
     // Write payload before persisting the updated index.
     const payloadWritten = writePayload(workspaceId, draftKey, {
@@ -166,13 +214,6 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     if (!payloadWritten) {
       return handleQuotaExceeded(path, data, meta, previousPayload)
     }
-
-    const { index: newIndex, evicted } = upsertEntry(
-      index,
-      path,
-      { ...meta, updatedAt: now },
-      MAX_DRAFTS
-    )
 
     // Commit index ownership before deleting LRU payloads. If the index write
     // fails, the previous payload/index pair remains recoverable.
