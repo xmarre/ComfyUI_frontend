@@ -661,7 +661,7 @@ describe('useWorkflowStore', () => {
       await store.deleteWorkflow(workflow)
 
       // Verify bookmark was removed
-      expect(bookmarkStore.isBookmarked(workflow.path)).toBe(false)
+      expect(workflowStore.isBookmarked(workflow.path)).toBe(false)
     })
   })
 
@@ -846,7 +846,7 @@ describe('useWorkflowStore', () => {
         pathToRootGraph: [{ name: 'Root' }, { name: 'Initial Subgraph' }],
         isRootGraph: false
       })
-      vi.mocked(comfyApp).canvas.subgraph = initialSubgraph
+      vi.mocked(comfyApp.canvas).subgraph = initialSubgraph
 
       // Mock isSubgraph to return true for our initialSubgraph
       vi.mocked(isSubgraph).mockImplementation(
@@ -875,7 +875,7 @@ describe('useWorkflowStore', () => {
 
       // Before changing workflow, set the canvas state to something different (e.g., root)
       // This ensures the watcher *does* cause a state change we can assert
-      vi.mocked(comfyApp).canvas.subgraph = undefined
+      vi.mocked(comfyApp.canvas).subgraph = undefined
 
       // Mock isSubgraph to return false for undefined
       vi.mocked(isSubgraph).mockImplementation(
