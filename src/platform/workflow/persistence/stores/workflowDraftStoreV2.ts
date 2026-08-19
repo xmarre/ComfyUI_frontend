@@ -41,6 +41,7 @@ import { app as comfyApp } from '@/scripts/app'
 interface DraftMeta {
   name: string
   isTemporary: boolean
+  isModified?: boolean
 }
 
 interface LoadPersistedWorkflowOptions {
@@ -140,7 +141,8 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
 
   /**
    * Saves a draft (data + metadata).
-   * Primes index cache, writes payload, then persists updated index.
+   * Existing overwrites commit small metadata before atomically replacing the
+   * payload; exceptional failure paths retain exact rollback semantics.
    */
   function saveDraft(path: string, data: string, meta: DraftMeta): boolean {
     if (!isStorageAvailable()) return false
@@ -492,6 +494,7 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     data: string
     name: string
     isTemporary: boolean
+    isModified?: boolean
     updatedAt: number
   } | null {
     const workspaceId = currentWorkspaceId()
@@ -511,6 +514,7 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
       data: payload.data,
       name: entry.name,
       isTemporary: entry.isTemporary,
+      isModified: entry.isModified,
       updatedAt: payload.updatedAt
     }
   }
