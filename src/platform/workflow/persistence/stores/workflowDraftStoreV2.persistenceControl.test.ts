@@ -30,4 +30,20 @@ describe('workflowDraftStoreV2 persistence control', () => {
     store.reset()
     expect(store.shouldNotifySaveFailure()).toBe(true)
   })
+
+  it('round-trips persisted graph modification metadata', () => {
+    const store = useWorkflowDraftStoreV2()
+    const path = 'workflows/dirty-metadata.json'
+
+    expect(
+      store.saveDraft(path, '{"nodes":[]}', {
+        name: 'dirty-metadata.json',
+        isTemporary: false,
+        isModified: false
+      })
+    ).toBe(true)
+
+    expect(store.getDraft(path)?.isModified).toBe(false)
+    store.removeDraft(path)
+  })
 })
