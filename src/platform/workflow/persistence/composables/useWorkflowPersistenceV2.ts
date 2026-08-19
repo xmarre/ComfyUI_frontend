@@ -134,7 +134,8 @@ export function useWorkflowPersistenceV2() {
     try {
       saved = draftStore.saveDraft(workflowPath, workflowJson, {
         name: activeWorkflow.key,
-        isTemporary: activeWorkflow.isTemporary
+        isTemporary: activeWorkflow.isTemporary,
+        isModified: activeWorkflow.isModified
       })
     } catch (error) {
       console.error('Failed to persist workflow draft', error)
