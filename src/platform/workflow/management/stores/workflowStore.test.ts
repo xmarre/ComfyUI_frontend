@@ -78,12 +78,16 @@ describe('useWorkflowStore', () => {
       data?: string
       name?: string
       isTemporary?: boolean
+      isModified?: boolean
     } = {}
   ) => {
     const draftStore = useWorkflowDraftStoreV2()
     draftStore.saveDraft(path, options.data ?? '{"dirty":true}', {
       name: options.name ?? path.split('/').at(-1) ?? path,
-      isTemporary: options.isTemporary ?? false
+      isTemporary: options.isTemporary ?? false,
+      ...(options.isModified === undefined
+        ? {}
+        : { isModified: options.isModified })
     })
     return draftStore
   }
@@ -323,6 +327,40 @@ describe('useWorkflowStore', () => {
 
       expect(workflow.activeState?.extra?.draftMarker).toBe('v2')
       expect(workflow.isModified).toBe(true)
+    })
+
+    it('should restore a clean persisted V2 draft from metadata', async () => {
+      enableWorkflowPersistence()
+
+      await syncRemoteWorkflowsWithMeta([
+        { path: 'a.json', modified: 100, size: 1 }
+      ])
+
+      const workflow = store.getWorkflowByPath('workflows/a.json')!
+      const draftGraph = JSON.parse(defaultGraphJSON)
+      draftGraph.extra = {
+        ...(draftGraph.extra ?? {}),
+        ds: { scale: 1.25, offset: [40, 80] }
+      }
+
+      saveV2Draft(workflow.path, {
+        data: JSON.stringify(draftGraph),
+        name: 'a.json',
+        isModified: false
+      })
+
+      vi.mocked(api.getUserData).mockResolvedValue({
+        status: 200,
+        text: () => Promise.resolve(defaultGraphJSON)
+      } as Response)
+
+      await workflow.load()
+
+      expect(workflow.activeState?.extra?.ds).toEqual({
+        scale: 1.25,
+        offset: [40, 80]
+      })
+      expect(workflow.isModified).toBe(false)
     })
 
     it('should discard a stale V2 draft when the remote workflow is newer', async () => {
@@ -808,7 +846,7 @@ describe('useWorkflowStore', () => {
         pathToRootGraph: [{ name: 'Root' }, { name: 'Initial Subgraph' }],
         isRootGraph: false
       })
-      vi.mocked(comfyApp.canvas).subgraph = initialSubgraph
+      vi.mocked(comfyApp).canvas.subgraph = initialSubgraph
 
       // Mock isSubgraph to return true for our initialSubgraph
       vi.mocked(isSubgraph).mockImplementation(
@@ -837,7 +875,7 @@ describe('useWorkflowStore', () => {
 
       // Before changing workflow, set the canvas state to something different (e.g., root)
       // This ensures the watcher *does* cause a state change we can assert
-      vi.mocked(comfyApp.canvas).subgraph = undefined
+      vi.mocked(comfyApp).canvas.subgraph = undefined
 
       // Mock isSubgraph to return false for undefined
       vi.mocked(isSubgraph).mockImplementation(
