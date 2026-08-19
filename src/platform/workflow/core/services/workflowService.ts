@@ -94,7 +94,8 @@ export const useWorkflowService = () => {
         JSON.stringify(draftState),
         {
           name: activeWorkflow.key,
-          isTemporary: activeWorkflow.isTemporary
+          isTemporary: activeWorkflow.isTemporary,
+          isModified: activeWorkflow.isModified
         }
       )
 
