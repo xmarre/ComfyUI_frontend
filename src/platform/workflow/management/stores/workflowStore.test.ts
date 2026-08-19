@@ -661,7 +661,7 @@ describe('useWorkflowStore', () => {
       await store.deleteWorkflow(workflow)
 
       // Verify bookmark was removed
-      expect(workflowStore.isBookmarked(workflow.path)).toBe(false)
+      expect(bookmarkStore.isBookmarked(workflow.path)).toBe(false)
     })
   })
 
