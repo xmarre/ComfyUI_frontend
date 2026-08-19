@@ -176,7 +176,7 @@ export class ComfyWorkflow extends UserFile {
       // Older V2 drafts lack it, so stay conservative and preserve the historical
       // behavior of treating any recovered draft as modified rather than doing a
       // full synchronous graph comparison during workflow activation.
-      this._isModified = draft.isModified ?? true
+      this._isModified = draft?.isModified ?? true
       // Saved-workflow draft overlay path; direct persisted-draft restores
       // are touched in workflowDraftStoreV2.loadDraft().
       draftStore.markDraftUsed(this.path)
