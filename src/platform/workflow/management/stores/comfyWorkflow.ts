@@ -172,7 +172,11 @@ export class ComfyWorkflow extends UserFile {
     if (draftState && draftContent) {
       this.changeTracker.activeState = draftState
       this.content = draftContent
-      this._isModified = !ChangeTracker.graphEqual(initialState, draftState)
+      // New drafts persist this bit when the outgoing canvas snapshot is taken.
+      // Older V2 drafts lack it, so stay conservative and preserve the historical
+      // behavior of treating any recovered draft as modified rather than doing a
+      // full synchronous graph comparison during workflow activation.
+      this._isModified = draft.isModified ?? true
       // Saved-workflow draft overlay path; direct persisted-draft restores
       // are touched in workflowDraftStoreV2.loadDraft().
       draftStore.markDraftUsed(this.path)
