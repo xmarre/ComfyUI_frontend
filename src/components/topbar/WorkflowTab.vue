@@ -7,7 +7,7 @@
         v-bind="$attrs"
         @mouseenter="handleMouseEnter"
         @mouseleave="handleMouseLeave"
-        @mouseup="handleMouseUp"
+        @mouseup.stop="handleMouseUp"
         @click="handleClick"
       >
         <i v-if="isBuilderState" class="bg-text-subtle icon-[lucide--hammer]" />
