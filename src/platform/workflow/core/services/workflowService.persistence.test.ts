@@ -96,7 +96,6 @@ function createLoadedWorkflow(): LoadedComfyWorkflow {
 describe('workflow service persistence reconciliation', () => {
   beforeEach(() => {
     setActivePinia(createTestingPinia())
-    vi.clearAllMocks()
     draftStoreMocks.saveDraft.mockReturnValue(true)
     draftStoreMocks.isPersistencePaused.mockReturnValue(false)
     draftStoreMocks.shouldNotifySaveFailure.mockReturnValue(true)
