@@ -176,7 +176,6 @@ describe('workflow persistence lifecycle reconciliation', () => {
     localStorage.clear()
     sessionStorage.clear()
     vi.useFakeTimers()
-    vi.clearAllMocks()
     settingMocks.persistRef!.value = true
     settingMocks.values = {}
     mocks.state.graphChangedHandler = null
@@ -202,7 +201,6 @@ describe('workflow persistence lifecycle reconciliation', () => {
       app.unmount()
       container.remove()
     }
-    vi.useRealTimers()
   })
 
   function mountWorkflowPersistence(): WorkflowPersistence {
