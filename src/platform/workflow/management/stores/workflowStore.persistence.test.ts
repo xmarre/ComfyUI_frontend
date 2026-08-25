@@ -135,9 +135,7 @@ describe('workflow store draft reconciliation', () => {
 
     await workflow.load()
 
-    expect(workflow.activeState?.extra?.draftMarker).toBe(
-      'restored-temporary'
-    )
+    expect(workflow.activeState?.extra?.draftMarker).toBe('restored-temporary')
     expect(workflow.isModified).toBe(true)
     expect(draftStore.getDraft(path)).not.toBeNull()
   })
