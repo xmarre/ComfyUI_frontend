@@ -70,7 +70,6 @@ describe('workflow store draft reconciliation', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     localStorage.clear()
-    vi.clearAllMocks()
     store = useWorkflowStore()
     enableWorkflowPersistence()
 
