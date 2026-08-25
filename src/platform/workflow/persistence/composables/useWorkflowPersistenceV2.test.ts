@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, defineComponent, nextTick } from 'vue'
+import { createApp, defineComponent, nextTick, reactive } from 'vue'
 import { createI18n } from 'vue-i18n'
 
 import { WORKSPACE_STORAGE_KEYS } from '@/platform/workspace/workspaceConstants'
 import { useWorkflowStore } from '@/platform/workflow/management/stores/workflowStore'
 import { StorageKeys } from '../base/storageKeys'
-import { clearWorkflowRestoreState } from '../base/storageIO'
+import * as storageIO from '../base/storageIO'
 import { useWorkflowDraftStoreV2 } from '../stores/workflowDraftStoreV2'
 import { useWorkflowPersistenceV2 } from './useWorkflowPersistenceV2'
 
@@ -96,9 +96,15 @@ vi.mock('vue-router', () => ({
   })
 }))
 
+const currentUserMocks = vi.hoisted(() => ({
+  onUserLogout: vi.fn(),
+  onUserResolved: vi.fn()
+}))
+
 vi.mock('@/composables/auth/useCurrentUser', () => ({
   useCurrentUser: () => ({
-    onUserLogout: vi.fn()
+    onUserLogout: currentUserMocks.onUserLogout,
+    onUserResolved: currentUserMocks.onUserResolved
   })
 }))
 
@@ -128,8 +134,21 @@ vi.mock('@/platform/navigation/preservedQueryNamespaces', () => ({
   PRESERVED_QUERY_NAMESPACES: { TEMPLATE: 'template', SHARE: 'share' }
 }))
 
+const distributionMocks = vi.hoisted(() => ({ isCloud: false }))
+
 vi.mock('@/platform/distribution/types', () => ({
-  isCloud: false
+  get isCloud() {
+    return distributionMocks.isCloud
+  }
+}))
+
+const teamWorkspaceStoreMocks = reactive({
+  initState: 'uninitialized' as 'uninitialized' | 'ready' | 'error',
+  activeWorkspaceId: null as string | null
+})
+
+vi.mock('@/platform/workspace/stores/teamWorkspaceStore', () => ({
+  useTeamWorkspaceStore: () => teamWorkspaceStoreMocks
 }))
 
 vi.mock('../migration/migrateV1toV2', () => ({
@@ -201,6 +220,9 @@ describe('useWorkflowPersistenceV2', () => {
     mocks.apiMock.removeEventListener.mockImplementation(() => {})
     routeMocks.query = {}
     preservedQueryMocks.payloads = {}
+    distributionMocks.isCloud = false
+    teamWorkspaceStoreMocks.initState = 'uninitialized'
+    teamWorkspaceStoreMocks.activeWorkspaceId = null
   })
 
   afterEach(() => {
@@ -295,98 +317,6 @@ describe('useWorkflowPersistenceV2', () => {
       await nextTick()
 
       expect(resetSpy).toHaveBeenCalledOnce()
-    })
-  })
-
-  describe('save failure notifications', () => {
-    it('shows one toast for a continuous storage failure across workflow paths', async () => {
-      await loadBlankIntoActiveWorkflow()
-
-      const workflowStore = useWorkflowStore()
-      const draftStore = useWorkflowDraftStoreV2()
-      const saveDraftSpy = vi.spyOn(draftStore, 'saveDraft')
-      saveDraftSpy.mockReturnValue(false)
-
-      mountWorkflowPersistence()
-
-      mocks.state.currentGraph = { nodes: [{ id: 1 }] }
-      mocks.state.graphChangedHandler?.()
-      await vi.runAllTimersAsync()
-
-      mocks.state.currentGraph = { nodes: [{ id: 2 }] }
-      mocks.state.graphChangedHandler?.()
-      await vi.runAllTimersAsync()
-      expect(mockToastAdd).toHaveBeenCalledTimes(1)
-
-      const second = workflowStore.createTemporary('second-workflow.json')
-      await workflowStore.openWorkflow(second)
-      await nextTick()
-
-      // Loading another workflow invokes another save path while the same
-      // storage failure is active; it must not create another toast.
-      expect(mockToastAdd).toHaveBeenCalledTimes(1)
-
-      mocks.state.currentGraph = { nodes: [{ id: 3 }] }
-      mocks.state.graphChangedHandler?.()
-      await vi.runAllTimersAsync()
-      expect(mockToastAdd).toHaveBeenCalledTimes(1)
-
-      // Any successful draft save proves storage recovered.
-      saveDraftSpy.mockReturnValueOnce(true)
-      mocks.state.currentGraph = { nodes: [{ id: 4 }] }
-      mocks.state.graphChangedHandler?.()
-      await vi.runAllTimersAsync()
-      expect(mockToastAdd).toHaveBeenCalledTimes(1)
-
-      saveDraftSpy.mockReturnValueOnce(false)
-      mocks.state.currentGraph = { nodes: [{ id: 5 }] }
-      mocks.state.graphChangedHandler?.()
-      await vi.runAllTimersAsync()
-      expect(mockToastAdd).toHaveBeenCalledTimes(2)
-    })
-  })
-
-  describe('active workflow transitions', () => {
-    it('cancels a pending graphChanged save before persisting the new active workflow', async () => {
-      await loadBlankIntoActiveWorkflow()
-
-      const workflowStore = useWorkflowStore()
-      const first = workflowStore.activeWorkflow!
-      const draftStore = useWorkflowDraftStoreV2()
-      const saveDraftSpy = vi.spyOn(draftStore, 'saveDraft')
-      const getDraftSpy = vi.spyOn(draftStore, 'getDraft')
-      saveDraftSpy.mockReturnValue(true)
-
-      mountWorkflowPersistence()
-
-      mocks.state.currentGraph = { nodes: [{ id: 'first-pending' }] }
-      mocks.state.graphChangedHandler?.()
-
-      const second = workflowStore.createTemporary('second-transition.json')
-      const loadedSecond = await second.load()
-      getDraftSpy.mockClear()
-      const secondGraph = { nodes: [{ id: 'second-active' }] }
-      mocks.state.currentGraph = secondGraph
-      workflowStore.activeWorkflow = loadedSecond
-      await nextTick()
-      expect(getDraftSpy).not.toHaveBeenCalled()
-      await vi.runAllTimersAsync()
-
-      expect(saveDraftSpy).toHaveBeenCalledTimes(1)
-      expect(saveDraftSpy).toHaveBeenCalledWith(
-        second.path,
-        JSON.stringify(secondGraph),
-        {
-          name: second.key,
-          isTemporary: true,
-          isModified: second.isModified
-        }
-      )
-      expect(saveDraftSpy).not.toHaveBeenCalledWith(
-        first.path,
-        expect.any(String),
-        expect.any(Object)
-      )
     })
   })
 
@@ -647,52 +577,6 @@ describe('useWorkflowPersistenceV2', () => {
   })
 
   describe('loadDefaultWorkflow', () => {
-    it('does not autosave startup-only workflow state', async () => {
-      loadBlankWorkflowMock.mockImplementation(async () => {
-        await loadBlankIntoActiveWorkflow()
-        mocks.state.currentGraph = { nodes: [{ id: 'startup' }] }
-        mocks.state.graphChangedHandler?.()
-      })
-
-      const draftStore = useWorkflowDraftStoreV2()
-      const saveDraftSpy = vi.spyOn(draftStore, 'saveDraft')
-      const { initializeWorkflow } = mountWorkflowPersistence()
-
-      await initializeWorkflow()
-      await vi.runAllTimersAsync()
-
-      expect(saveDraftSpy).not.toHaveBeenCalled()
-
-      mocks.state.currentGraph = { nodes: [{ id: 'user-edit' }] }
-      mocks.state.graphChangedHandler?.()
-      await vi.runAllTimersAsync()
-
-      expect(saveDraftSpy).toHaveBeenCalledOnce()
-    })
-
-    it('persists modified temporary workflow from startup loader when no draft exists', async () => {
-      loadBlankWorkflowMock.mockImplementation(async () => {
-        await loadBlankIntoActiveWorkflow()
-        const workflowStore = useWorkflowStore()
-        const workflow = workflowStore.activeWorkflow
-        if (workflow) {
-          workflow.isModified = true
-        }
-      })
-
-      const draftStore = useWorkflowDraftStoreV2()
-      const saveDraftSpy = vi.spyOn(draftStore, 'saveDraft')
-      vi.spyOn(draftStore, 'getDraft').mockReturnValue(null)
-
-      const { initializeWorkflow } = mountWorkflowPersistence()
-
-      await initializeWorkflow()
-      expect(saveDraftSpy).toHaveBeenCalledOnce()
-
-      await vi.runAllTimersAsync()
-      expect(saveDraftSpy).toHaveBeenCalledOnce()
-    })
-
     it('reports a fresh start for first-time users', async () => {
       const { initializeWorkflow } = mountWorkflowPersistence()
 
@@ -877,6 +761,7 @@ describe('useWorkflowPersistenceV2', () => {
   })
 
   it('flushes the final source-workspace edit before blocking transition writes', async () => {
+    distributionMocks.isCloud = true
     const sourceWorkspaceId = 'workspace-a'
     const destinationWorkspaceId = 'workspace-b'
     sessionStorage.setItem(
@@ -907,7 +792,7 @@ describe('useWorkflowPersistenceV2', () => {
     )
     expect(localStorage.getItem(sourcePayloadKey)).toBeNull()
 
-    clearWorkflowRestoreState({ blockWrites: true })
+    const cancelTransition = storageIO.prepareWorkflowWorkspaceTransition()
     sessionStorage.setItem(
       WORKSPACE_STORAGE_KEYS.CURRENT_WORKSPACE,
       JSON.stringify({ id: destinationWorkspaceId, type: 'team' })
@@ -931,5 +816,145 @@ describe('useWorkflowPersistenceV2', () => {
     expect(
       sessionStorage.getItem(StorageKeys.openPaths('test-client'))
     ).toBeNull()
+    cancelTransition()
+  })
+
+  it('resumes workflow writes once workspace readiness is confirmed after authentication recovers', async () => {
+    distributionMocks.isCloud = true
+    localStorage.setItem('Comfy.Workflow.DraftIndex.v2:workspace-a', '{}')
+    sessionStorage.setItem('Comfy.Workflow.ActivePath:test-client', '{}')
+    mountWorkflowPersistence()
+
+    const onLogout = currentUserMocks.onUserLogout.mock.calls[0][0]
+    const onUserResolved = currentUserMocks.onUserResolved.mock.calls[0][0]
+    onLogout()
+
+    expect(localStorage).toHaveLength(0)
+    expect(sessionStorage).toHaveLength(0)
+    expect(
+      storageIO.writePayload('workspace-a', 'blocked', {
+        data: '{}',
+        updatedAt: 1
+      })
+    ).toBe(false)
+
+    onUserResolved({ id: 'user-a' })
+
+    expect(
+      storageIO.writePayload('workspace-a', 'still-blocked', {
+        data: '{}',
+        updatedAt: 2
+      })
+    ).toBe(false)
+
+    teamWorkspaceStoreMocks.activeWorkspaceId = 'workspace-a'
+    teamWorkspaceStoreMocks.initState = 'ready'
+    await nextTick()
+
+    expect(
+      storageIO.writePayload('workspace-a', 'resumed', {
+        data: '{}',
+        updatedAt: 3
+      })
+    ).toBe(true)
+  })
+
+  it('cancels stale workspace-readiness watchers across authentication episodes', async () => {
+    distributionMocks.isCloud = true
+    const completeTransitionSpy = vi.spyOn(
+      storageIO,
+      'completeWorkflowLogoutTransition'
+    )
+    mountWorkflowPersistence()
+
+    const onLogout = currentUserMocks.onUserLogout.mock.calls[0][0]
+    const onUserResolved = currentUserMocks.onUserResolved.mock.calls[0][0]
+    onLogout()
+    onUserResolved({ id: 'user-b' })
+    onLogout()
+    onUserResolved({ id: 'user-c' })
+
+    teamWorkspaceStoreMocks.activeWorkspaceId = 'workspace-c'
+    teamWorkspaceStoreMocks.initState = 'ready'
+    await nextTick()
+
+    expect(completeTransitionSpy).toHaveBeenCalledOnce()
+  })
+
+  it('releases the write fence when workspace initialization fails permanently', async () => {
+    distributionMocks.isCloud = true
+    const completeTransitionSpy = vi.spyOn(
+      storageIO,
+      'completeWorkflowLogoutTransition'
+    )
+    mountWorkflowPersistence()
+
+    const onLogout = currentUserMocks.onUserLogout.mock.calls[0][0]
+    const onUserResolved = currentUserMocks.onUserResolved.mock.calls[0][0]
+    onLogout()
+    onUserResolved({ id: 'user-a' })
+
+    expect(completeTransitionSpy).not.toHaveBeenCalled()
+
+    teamWorkspaceStoreMocks.initState = 'error'
+    await nextTick()
+
+    expect(completeTransitionSpy).toHaveBeenCalledOnce()
+  })
+
+  it('waits for workspace readiness and drops pending pre-logout edits', async () => {
+    distributionMocks.isCloud = true
+    const sourceWorkspaceId = 'workspace-a'
+    const destinationWorkspaceId = 'workspace-b'
+    sessionStorage.setItem(
+      WORKSPACE_STORAGE_KEYS.CURRENT_WORKSPACE,
+      JSON.stringify({ id: sourceWorkspaceId, type: 'team' })
+    )
+    const workflowStore = useWorkflowStore()
+    const workflow = await workflowStore
+      .createTemporary('LogoutRecovery.json')
+      .load()
+    workflowStore.activeWorkflow = workflow
+    mountWorkflowPersistence()
+    mocks.state.currentGraph = { marker: 'stale-source-edit' }
+    mocks.state.graphChangedHandler?.()
+
+    const onLogout = currentUserMocks.onUserLogout.mock.calls[0][0]
+    const onUserResolved = currentUserMocks.onUserResolved.mock.calls[0][0]
+    onLogout()
+    onUserResolved({ id: 'user-b' })
+    await vi.runAllTimersAsync()
+
+    const sourcePayloadKey = StorageKeys.draftPayload(
+      workflow.path,
+      sourceWorkspaceId
+    )
+    const destinationPayloadKey = StorageKeys.draftPayload(
+      workflow.path,
+      destinationWorkspaceId
+    )
+    const personalPayloadKey = StorageKeys.draftPayload(
+      workflow.path,
+      'personal'
+    )
+    expect(localStorage.getItem(sourcePayloadKey)).toBeNull()
+    expect(localStorage.getItem(destinationPayloadKey)).toBeNull()
+    expect(localStorage.getItem(personalPayloadKey)).toBeNull()
+
+    sessionStorage.setItem(
+      WORKSPACE_STORAGE_KEYS.CURRENT_WORKSPACE,
+      JSON.stringify({ id: destinationWorkspaceId, type: 'team' })
+    )
+    teamWorkspaceStoreMocks.activeWorkspaceId = destinationWorkspaceId
+    teamWorkspaceStoreMocks.initState = 'ready'
+    await nextTick()
+
+    mocks.state.currentGraph = { marker: 'destination-edit' }
+    mocks.state.graphChangedHandler?.()
+    await vi.runAllTimersAsync()
+
+    expect(localStorage.getItem(sourcePayloadKey)).toBeNull()
+    expect(localStorage.getItem(personalPayloadKey)).toBeNull()
+    expect(localStorage.getItem(destinationPayloadKey)).not.toBeNull()
   })
 })

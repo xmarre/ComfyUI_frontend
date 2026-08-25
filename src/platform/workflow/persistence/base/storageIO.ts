@@ -12,9 +12,25 @@ import type {
 } from './draftTypes'
 import { StorageKeys } from './storageKeys'
 
-/** Flag indicating if storage is available */
-let storageAvailable = true
-let workflowWritesBlocked = false
+type StorageAvailability = 'available' | 'unavailable'
+type WorkflowStorageState =
+  | { status: 'ready'; availability: StorageAvailability }
+  | {
+      status: 'transitioning'
+      reason: 'workspace'
+      resumeAvailability: StorageAvailability
+      ownerId: symbol
+    }
+  | {
+      status: 'transitioning'
+      reason: 'logout'
+      resumeAvailability: StorageAvailability
+    }
+
+let workflowStorageState: WorkflowStorageState = {
+  status: 'ready',
+  availability: 'available'
+}
 const pendingPersistenceFlushes = new Set<() => void>()
 
 export function registerWorkflowPersistenceFlush(
@@ -35,11 +51,23 @@ function flushPendingWorkflowPersistence(): void {
 }
 
 export function isStorageAvailable(): boolean {
-  return storageAvailable && !workflowWritesBlocked
+  return (
+    workflowStorageState.status === 'ready' &&
+    workflowStorageState.availability === 'available'
+  )
 }
 
 export function markStorageUnavailable(): void {
-  storageAvailable = false
+  workflowStorageState =
+    workflowStorageState.status === 'transitioning'
+      ? { ...workflowStorageState, resumeAvailability: 'unavailable' }
+      : { status: 'ready', availability: 'unavailable' }
+}
+
+function isStorageReadable(): boolean {
+  return workflowStorageState.status === 'transitioning'
+    ? workflowStorageState.resumeAvailability === 'available'
+    : workflowStorageState.availability === 'available'
 }
 
 function isQuotaExceeded(error: unknown): boolean {
@@ -68,7 +96,7 @@ function isValidIndex(value: unknown): value is DraftIndexV2 {
  * Reads and parses the draft index from localStorage.
  */
 export function readIndex(workspaceId: string): DraftIndexV2 | null {
-  if (!storageAvailable) return null
+  if (!isStorageReadable()) return null
 
   try {
     const key = StorageKeys.draftIndex(workspaceId)
@@ -88,49 +116,11 @@ export function readIndex(workspaceId: string): DraftIndexV2 | null {
  * Writes the draft index to localStorage.
  */
 export function writeIndex(workspaceId: string, index: DraftIndexV2): boolean {
-  if (!storageAvailable || workflowWritesBlocked) return false
+  if (!isStorageAvailable()) return false
 
   try {
     const key = StorageKeys.draftIndex(workspaceId)
     localStorage.setItem(key, JSON.stringify(index))
-    return true
-  } catch (error) {
-    if (isQuotaExceeded(error)) return false
-    throw error
-  }
-}
-
-function draftPayloadStorageKey(workspaceId: string, draftKey: string): string {
-  return `${StorageKeys.prefixes.draftPayload}${workspaceId}:${draftKey}`
-}
-
-/** Reads the exact serialized draft payload without parsing workflow data. */
-export function readPayloadRaw(
-  workspaceId: string,
-  draftKey: string
-): string | null {
-  if (!storageAvailable) return null
-
-  try {
-    return localStorage.getItem(draftPayloadStorageKey(workspaceId, draftKey))
-  } catch {
-    return null
-  }
-}
-
-/** Writes an exact serialized draft payload. Used for lossless rollback. */
-export function writePayloadRaw(
-  workspaceId: string,
-  draftKey: string,
-  serializedPayload: string
-): boolean {
-  if (!storageAvailable || workflowWritesBlocked) return false
-
-  try {
-    localStorage.setItem(
-      draftPayloadStorageKey(workspaceId, draftKey),
-      serializedPayload
-    )
     return true
   } catch (error) {
     if (isQuotaExceeded(error)) return false
@@ -145,10 +135,13 @@ export function readPayload(
   workspaceId: string,
   draftKey: string
 ): DraftPayloadV2 | null {
-  const json = readPayloadRaw(workspaceId, draftKey)
-  if (json === null) return null
+  if (!isStorageReadable()) return null
 
   try {
+    const key = `${StorageKeys.prefixes.draftPayload}${workspaceId}:${draftKey}`
+    const json = localStorage.getItem(key)
+    if (!json) return null
+
     return JSON.parse(json) as DraftPayloadV2
   } catch {
     return null
@@ -163,18 +156,27 @@ export function writePayload(
   draftKey: string,
   payload: DraftPayloadV2
 ): boolean {
-  return writePayloadRaw(workspaceId, draftKey, JSON.stringify(payload))
+  if (!isStorageAvailable()) return false
+
+  try {
+    const key = `${StorageKeys.prefixes.draftPayload}${workspaceId}:${draftKey}`
+    localStorage.setItem(key, JSON.stringify(payload))
+    return true
+  } catch (error) {
+    if (isQuotaExceeded(error)) return false
+    throw error
+  }
 }
 
 /**
  * Deletes a draft payload from localStorage.
  */
-export function deletePayload(workspaceId: string, draftKey: string): boolean {
+export function deletePayload(workspaceId: string, draftKey: string): void {
   try {
-    localStorage.removeItem(draftPayloadStorageKey(workspaceId, draftKey))
-    return true
+    const key = `${StorageKeys.prefixes.draftPayload}${workspaceId}:${draftKey}`
+    localStorage.removeItem(key)
   } catch {
-    return false
+    // Ignore errors during deletion
   }
 }
 
@@ -191,7 +193,7 @@ export function deletePayloads(workspaceId: string, draftKeys: string[]): void {
  * Gets all draft payload keys for a workspace from localStorage.
  */
 export function getPayloadKeys(workspaceId: string): string[] {
-  if (!storageAvailable) return []
+  if (!isStorageReadable()) return []
 
   const prefix = `${StorageKeys.prefixes.draftPayload}${workspaceId}:`
   const keys: string[] = []
@@ -344,16 +346,6 @@ export function clearActivePath(clientId: string, workspaceId: string): void {
   }
 }
 
-/** Reads the durable open-path pointer used for browser-restart recovery. */
-export function readPersistentOpenPaths(
-  workspaceId: string
-): OpenPathsPointer | null {
-  return readLocalPointer<OpenPathsPointer>(
-    StorageKeys.lastOpenPaths(workspaceId),
-    isValidOpenPathsPointer
-  )
-}
-
 /**
  * Reads the open paths pointer from sessionStorage.
  * Falls back to workspace-based search when clientId changes after reload,
@@ -368,7 +360,13 @@ export function readOpenPaths(
       StorageKeys.openPaths(clientId),
       StorageKeys.prefixes.openPaths,
       targetWorkspaceId
-    ) ?? (targetWorkspaceId ? readPersistentOpenPaths(targetWorkspaceId) : null)
+    ) ??
+    (targetWorkspaceId
+      ? readLocalPointer<OpenPathsPointer>(
+          StorageKeys.lastOpenPaths(targetWorkspaceId),
+          isValidOpenPathsPointer
+        )
+      : null)
   )
 }
 
@@ -424,7 +422,7 @@ function readLocalPointer<T>(
 }
 
 function writeStorage(storage: Storage, key: string, value: string): void {
-  if (!storageAvailable || workflowWritesBlocked) return
+  if (!isStorageAvailable()) return
 
   try {
     storage.setItem(key, value)
@@ -482,29 +480,65 @@ function removeStorageKeys(
   }
 }
 
-export function clearWorkflowRestoreState(
-  options: { blockWrites?: boolean } = {}
-): void {
-  if (options.blockWrites) {
-    prepareWorkflowWorkspaceTransition()
-    return
-  }
-
+export function clearWorkflowRestoreState(): void {
   removeStorageKeys(localStorage, legacyLocalRestoreKeys)
   removeStorageKeys(sessionStorage, sessionRestoreKeys, sessionRestorePrefixes)
 }
 
-export function prepareWorkflowWorkspaceTransition(): void {
-  if (!workflowWritesBlocked) flushPendingWorkflowPersistence()
-  workflowWritesBlocked = true
+export function prepareWorkflowWorkspaceTransition(): () => void {
+  let ownerId: symbol | undefined
+  if (workflowStorageState.status === 'ready') {
+    flushPendingWorkflowPersistence()
+    ownerId = Symbol('workflow-storage-transition')
+    workflowStorageState = {
+      status: 'transitioning',
+      reason: 'workspace',
+      resumeAvailability: workflowStorageState.availability,
+      ownerId
+    }
+  }
   clearWorkflowRestoreState()
+
+  return () => {
+    if (
+      workflowStorageState.status !== 'transitioning' ||
+      workflowStorageState.reason !== 'workspace' ||
+      workflowStorageState.ownerId !== ownerId
+    )
+      return
+
+    workflowStorageState = {
+      status: 'ready',
+      availability: workflowStorageState.resumeAvailability
+    }
+  }
 }
 
-export function clearAllWorkflowStorage(
-  options: { blockWrites?: boolean } = {}
-): void {
-  if (options.blockWrites) workflowWritesBlocked = true
+export function prepareWorkflowLogoutTransition(): void {
+  workflowStorageState = {
+    status: 'transitioning',
+    reason: 'logout',
+    resumeAvailability:
+      workflowStorageState.status === 'transitioning'
+        ? workflowStorageState.resumeAvailability
+        : workflowStorageState.availability
+  }
+}
 
+export function completeWorkflowLogoutTransition(): void {
+  if (
+    workflowStorageState.status !== 'transitioning' ||
+    workflowStorageState.reason !== 'logout'
+  )
+    return
+
+  workflowStorageState = {
+    status: 'ready',
+    availability: workflowStorageState.resumeAvailability
+  }
+}
+
+export function clearAllWorkflowStorage(): void {
   const localPrefixes = [
     StorageKeys.prefixes.draftIndex,
     StorageKeys.prefixes.draftPayload,

@@ -4,22 +4,22 @@ import { nextTick } from 'vue'
 
 import type { LGraph, Subgraph } from '@/lib/litegraph/src/litegraph'
 import { useSettingStore } from '@/platform/settings/settingStore'
-import type {
-  ComfyWorkflow,
-  LoadedComfyWorkflow
-} from '@/platform/workflow/management/stores/workflowStore'
+import type { LoadedComfyWorkflow } from '@/platform/workflow/management/stores/workflowStore'
+import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
 import {
+  ComfyWorkflow,
   useWorkflowBookmarkStore,
   useWorkflowStore
 } from '@/platform/workflow/management/stores/workflowStore'
+import { zComfyWorkflow } from '@/platform/workflow/validation/schemas/workflowSchema'
 import { useWorkflowDraftStoreV2 } from '@/platform/workflow/persistence/stores/workflowDraftStoreV2'
-import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
 import { api } from '@/scripts/api'
 import { app as comfyApp } from '@/scripts/app'
 import { defaultGraph, defaultGraphJSON } from '@/scripts/defaultGraph'
 import { toNodeId } from '@/types/nodeId'
 import type { NodeId } from '@/types/nodeId'
 import { createNodeLocatorId } from '@/types/nodeIdentification'
+import { isValidUuid } from '@/utils/formatUtil'
 import { isSubgraph } from '@/utils/typeGuardUtil'
 import {
   createMockCanvas,
@@ -78,16 +78,12 @@ describe('useWorkflowStore', () => {
       data?: string
       name?: string
       isTemporary?: boolean
-      isModified?: boolean
     } = {}
   ) => {
     const draftStore = useWorkflowDraftStoreV2()
     draftStore.saveDraft(path, options.data ?? '{"dirty":true}', {
       name: options.name ?? path.split('/').at(-1) ?? path,
-      isTemporary: options.isTemporary ?? false,
-      ...(options.isModified === undefined
-        ? {}
-        : { isModified: options.isModified })
+      isTemporary: options.isTemporary ?? false
     })
     return draftStore
   }
@@ -218,28 +214,80 @@ describe('useWorkflowStore', () => {
 
     it('should assign a workflow id to newly created temporary workflows', () => {
       const workflow = store.createTemporary('id-test.json')
-      const state = JSON.parse(workflow.content!)
+      const state = zComfyWorkflow.parse(JSON.parse(workflow.content!))
 
-      expect(typeof state.id).toBe('string')
-      expect(state.id.length).toBeGreaterThan(0)
+      expect(isValidUuid(state.id)).toBe(true)
     })
 
-    it('should assign an id when temporary workflow data is missing one', () => {
-      const workflowDataWithoutId = {
+    it('migrates a legacy id without mutating the input', () => {
+      const workflowData = fromPartial<ComfyWorkflowJSON>({
         ...defaultGraph,
-        id: undefined
-      }
+        id: 'video-point-prompt-example'
+      })
+      const originalData = structuredClone(workflowData)
 
-      const workflow = store.createTemporary(
-        'missing-id.json',
-        workflowDataWithoutId
-      )
-      const state = JSON.parse(workflow.content!)
+      const workflow = store.createTemporary('legacy.json', workflowData)
+      const state = zComfyWorkflow.parse(JSON.parse(workflow.content!))
 
-      expect(typeof state.id).toBe('string')
-      expect(state.id.length).toBeGreaterThan(0)
-      expect(workflowDataWithoutId.id).toBeUndefined()
+      expect(isValidUuid(state.id)).toBe(true)
+      expect(workflow.legacyId).toBe('video-point-prompt-example')
+      expect(workflowData).toEqual(originalData)
     })
+
+    it.for([
+      {
+        label: 'the same legacy id',
+        existingId: '9cea40bb-b0cf-4b40-a758-8935cfe8d52f',
+        incomingId: 'legacy-a',
+        legacyId: 'legacy-a',
+        expectedPath: 'external/repeat.json',
+        expectedResetCount: 1
+      },
+      {
+        label: 'a different legacy id',
+        existingId: '9cea40bb-b0cf-4b40-a758-8935cfe8d52f',
+        incomingId: 'legacy-b',
+        legacyId: 'legacy-a',
+        expectedPath: 'workflows/repeat.json',
+        expectedResetCount: 0
+      },
+      {
+        label: 'equivalent UUID casing',
+        existingId: '9cea40bb-b0cf-4b40-a758-8935cfe8d52f',
+        incomingId: '9CEA40BB-B0CF-4B40-A758-8935CFE8D52F',
+        expectedPath: 'external/repeat.json',
+        expectedResetCount: 1
+      }
+    ])(
+      'returns $expectedPath for an external same-name workflow with $label',
+      ({
+        existingId,
+        incomingId,
+        legacyId,
+        expectedPath,
+        expectedResetCount
+      }) => {
+        const existingWorkflow = new ComfyWorkflow({
+          path: 'external/repeat.json',
+          modified: Date.now(),
+          size: -1
+        })
+        existingWorkflow.changeTracker = createMockChangeTracker()
+        existingWorkflow.changeTracker.activeState.id = existingId
+        existingWorkflow.legacyId = legacyId
+        store.attachWorkflow(existingWorkflow)
+
+        const result = store.createTemporary(
+          'repeat.json',
+          fromPartial<ComfyWorkflowJSON>({ ...defaultGraph, id: incomingId })
+        )
+
+        expect(result.path).toBe(expectedPath)
+        expect(existingWorkflow.changeTracker.reset).toHaveBeenCalledTimes(
+          expectedResetCount
+        )
+      }
+    )
   })
 
   describe('openWorkflow', () => {
@@ -329,40 +377,6 @@ describe('useWorkflowStore', () => {
       expect(workflow.isModified).toBe(true)
     })
 
-    it('should restore a clean persisted V2 draft from metadata', async () => {
-      enableWorkflowPersistence()
-
-      await syncRemoteWorkflowsWithMeta([
-        { path: 'a.json', modified: 100, size: 1 }
-      ])
-
-      const workflow = store.getWorkflowByPath('workflows/a.json')!
-      const draftGraph = JSON.parse(defaultGraphJSON)
-      draftGraph.extra = {
-        ...(draftGraph.extra ?? {}),
-        ds: { scale: 1.25, offset: [40, 80] }
-      }
-
-      saveV2Draft(workflow.path, {
-        data: JSON.stringify(draftGraph),
-        name: 'a.json',
-        isModified: false
-      })
-
-      vi.mocked(api.getUserData).mockResolvedValue({
-        status: 200,
-        text: () => Promise.resolve(defaultGraphJSON)
-      } as Response)
-
-      await workflow.load()
-
-      expect(workflow.activeState?.extra?.ds).toEqual({
-        scale: 1.25,
-        offset: [40, 80]
-      })
-      expect(workflow.isModified).toBe(false)
-    })
-
     it('should discard a stale V2 draft when the remote workflow is newer', async () => {
       enableWorkflowPersistence()
       const remoteModifiedAt = Date.now() + 60_000
@@ -392,38 +406,6 @@ describe('useWorkflowStore', () => {
       expect(workflow.activeState?.extra?.draftMarker).toBeUndefined()
       expect(workflow.isModified).toBe(false)
       expect(draftStore.getDraft(workflow.path)).toBeNull()
-    })
-
-    it('should preserve a restored temporary V2 draft despite its synthetic timestamp', async () => {
-      enableWorkflowPersistence()
-
-      const path = 'workflows/restored-temporary.json'
-      const baseGraph = JSON.parse(defaultGraphJSON) as ComfyWorkflowJSON
-      const draftGraph: ComfyWorkflowJSON = {
-        ...baseGraph,
-        extra: {
-          ...(baseGraph.extra ?? {}),
-          draftMarker: 'restored-temporary'
-        }
-      }
-      const draftStore = saveV2Draft(path, {
-        data: JSON.stringify(draftGraph),
-        name: 'restored-temporary.json',
-        isTemporary: true
-      })
-
-      const workflow = store.createTemporary('restored-temporary.json')
-      // Recreate the startup invariant: a temporary workflow receives a fresh
-      // synthetic timestamp after the older draft was persisted/migrated.
-      workflow.lastModified = Date.now() + 60_000
-
-      await workflow.load()
-
-      expect(workflow.activeState?.extra?.draftMarker).toBe(
-        'restored-temporary'
-      )
-      expect(workflow.isModified).toBe(true)
-      expect(draftStore.getDraft(path)).not.toBeNull()
     })
 
     it('should load and open a remote workflow', async () => {

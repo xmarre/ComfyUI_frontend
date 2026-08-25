@@ -11,7 +11,6 @@ import {
 
 describe('migrateV1toV2', () => {
   const workspaceId = 'test-workspace'
-  const personalWorkspaceId = 'personal'
 
   beforeEach(() => {
     vi.resetModules()
@@ -32,17 +31,6 @@ describe('migrateV1toV2', () => {
       `Comfy.Workflow.DraftOrder:${workspaceId}`,
       JSON.stringify(order)
     )
-  }
-
-  function setPersonalV1Data(
-    drafts: Record<
-      string,
-      { data: string; updatedAt: number; name: string; isTemporary: boolean }
-    >,
-    order: string[]
-  ) {
-    localStorage.setItem('Comfy.Workflow.Drafts', JSON.stringify(drafts))
-    localStorage.setItem('Comfy.Workflow.DraftOrder', JSON.stringify(order))
   }
 
   describe('isV2MigrationComplete', () => {
@@ -170,7 +158,7 @@ describe('migrateV1toV2', () => {
       expect(index.order).toEqual(expectedOrder)
     })
 
-    it('removes fully migrated V1 data after a successful commit', () => {
+    it('keeps V1 data intact after migration', () => {
       const v1Drafts = {
         'workflows/test.json': {
           data: '{}',
@@ -183,12 +171,13 @@ describe('migrateV1toV2', () => {
 
       migrateV1toV2(workspaceId)
 
+      // V1 data should still exist
       expect(
         localStorage.getItem(`Comfy.Workflow.Drafts:${workspaceId}`)
-      ).toBeNull()
+      ).not.toBeNull()
       expect(
         localStorage.getItem(`Comfy.Workflow.DraftOrder:${workspaceId}`)
-      ).toBeNull()
+      ).not.toBeNull()
     })
   })
 
@@ -218,7 +207,7 @@ describe('migrateV1toV2', () => {
   })
 
   describe('V1 tab state migration', () => {
-    it('migrates personal V1 tab state pointers to V2 format', () => {
+    it('migrates V1 tab state pointers to V2 format', () => {
       // Simulate V1 state: user had 3 workflows open, 2nd was active
       const v1Drafts = {
         'workflows/a.json': {
@@ -240,7 +229,7 @@ describe('migrateV1toV2', () => {
           isTemporary: false
         }
       }
-      setPersonalV1Data(v1Drafts, [
+      setV1Data(v1Drafts, [
         'workflows/a.json',
         'workflows/b.json',
         'workflows/c.json'
@@ -257,13 +246,15 @@ describe('migrateV1toV2', () => {
       )
       localStorage.setItem('Comfy.ActiveWorkflowIndex', JSON.stringify(1))
 
-      // Global V1 state belongs to the personal workspace only.
+      // Run migration (simulating upgrade from pre-V2 to V2)
       const clientId = 'client-123'
-      const result = migrateV1toV2(personalWorkspaceId, clientId)
+      const result = migrateV1toV2(workspaceId, clientId)
       expect(result).toBe(3)
 
-      const openPaths = readOpenPaths(clientId, personalWorkspaceId)
+      // V2 tab state should be readable via the V2 API
+      const openPaths = readOpenPaths(clientId, workspaceId)
 
+      // V2 tab state should be reconstructed from V1 localStorage keys
       expect(openPaths).not.toBeNull()
       expect(openPaths!.paths).toEqual([
         'workflows/a.json',
@@ -282,12 +273,12 @@ describe('migrateV1toV2', () => {
           isTemporary: true
         }
       }
-      setPersonalV1Data(v1Drafts, ['workflows/a.json'])
+      setV1Data(v1Drafts, ['workflows/a.json'])
 
       // No V1 tab state keys in localStorage
-      migrateV1toV2(personalWorkspaceId)
+      migrateV1toV2(workspaceId)
 
-      const openPaths = readOpenPaths('any-client-id', personalWorkspaceId)
+      const openPaths = readOpenPaths('any-client-id', workspaceId)
 
       // No tab state to migrate — should remain null
       expect(openPaths).toBeNull()

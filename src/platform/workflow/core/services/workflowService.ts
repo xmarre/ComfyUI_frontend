@@ -2,7 +2,6 @@ import { toRaw } from 'vue'
 
 import { downloadBlob } from '@/base/common/downloadUtil'
 import { t } from '@/i18n'
-import { LGraph, LGraphCanvas } from '@/lib/litegraph/src/litegraph'
 import type { Point, SerialisableGraph } from '@/lib/litegraph/src/litegraph'
 import { useSettingStore } from '@/platform/settings/settingStore'
 import { useToastStore } from '@/platform/updates/common/toastStore'
@@ -10,7 +9,12 @@ import {
   normalizePendingWarnings,
   updatePendingWarnings
 } from '@/platform/workflow/core/utils/pendingWarnings'
-import { withWorkflowViewState } from '@/platform/workflow/persistence/base/workflowViewState'
+import { workflowToClipboardItems } from '@/platform/workflow/core/utils/workflowToClipboardItems'
+import {
+  areWorkflowIdsEquivalent,
+  ensureWorkflowId,
+  getLegacyWorkflowId
+} from '@/platform/workflow/core/utils/workflowId'
 import { useWorkflowDraftStoreV2 } from '@/platform/workflow/persistence/stores/workflowDraftStoreV2'
 import {
   ComfyWorkflow,
@@ -63,52 +67,30 @@ export const useWorkflowService = () => {
     })
   }
 
-  const getDraftStateWithView = (
-    activeWorkflow: ComfyWorkflow
-  ): ComfyWorkflowJSON | null => {
-    const activeState = activeWorkflow.activeState
-    if (!activeState) return null
-
-    return withWorkflowViewState(
-      activeState,
-      activeWorkflow.changeTracker?.ds,
-      settingStore.get('Comfy.EnableWorkflowViewRestore')
-    )
-  }
-
   const persistActiveWorkflowDraft = (activeWorkflow: ComfyWorkflow) => {
-    if (
-      workflowDraftStore.isPersistencePaused() ||
-      !settingStore.get('Comfy.Workflow.Persist') ||
-      !activeWorkflow.path
-    ) {
+    if (!settingStore.get('Comfy.Workflow.Persist') || !activeWorkflow.path) {
       return
     }
 
-    const draftState = getDraftStateWithView(activeWorkflow)
-    if (!draftState) return
+    const activeState = activeWorkflow.activeState
+    if (!activeState) return
 
     try {
       const saved = workflowDraftStore.saveDraft(
         activeWorkflow.path,
-        JSON.stringify(draftState),
+        JSON.stringify(activeState),
         {
           name: activeWorkflow.key,
-          isTemporary: activeWorkflow.isTemporary,
-          isModified: activeWorkflow.isModified
+          isTemporary: activeWorkflow.isTemporary
         }
       )
 
-      if (saved) {
-        workflowDraftStore.markSaveSucceeded()
-      } else if (workflowDraftStore.shouldNotifySaveFailure()) {
+      if (!saved) {
         showFailedToSaveDraftToast()
       }
     } catch (err) {
       console.error('Failed to persist active workflow draft', err)
-      if (workflowDraftStore.shouldNotifySaveFailure()) {
-        showFailedToSaveDraftToast()
-      }
+      showFailedToSaveDraftToast()
     }
   }
 
@@ -243,14 +225,13 @@ export const useWorkflowService = () => {
     const expectedPath =
       workflow.directory + '/' + appendWorkflowJsonExt(workflow.filename, isApp)
     if (workflow.path !== expectedPath) {
-      const existingWorkflow = workflowStore.getWorkflowByPath(expectedPath)
-      if (existingWorkflow && !existingWorkflow.isTemporary) {
+      const existing = workflowStore.getWorkflowByPath(expectedPath)
+      if (existing && !existing.isTemporary) {
         if ((await confirmOverwrite(expectedPath)) !== true) {
           await workflowStore.saveWorkflow(workflow)
           return true
         }
-        const deleted = await deleteWorkflow(existingWorkflow, true)
-        if (!deleted) return false
+        await deleteWorkflow(existing, true)
       }
       await renameWorkflow(workflow, expectedPath)
       toastStore.add({
@@ -517,12 +498,15 @@ export const useWorkflowService = () => {
         //
         // This prevents accidental duplicate tabs when startup/load flows
         // invoke loadGraphData more than once for the same workflow name.
+        const existingId = existingWorkflow?.activeState?.id
         const isSameActiveWorkflowLoad =
           !!existingWorkflow &&
           workflowStore.isActive(existingWorkflow) &&
-          (existingWorkflow.activeState?.id === undefined ||
-            workflowData.id === undefined ||
-            existingWorkflow.activeState.id === workflowData.id)
+          areWorkflowIdsEquivalent(
+            existingId,
+            workflowData.id,
+            existingWorkflow.legacyId
+          )
 
         if (
           existingWorkflow &&
@@ -543,7 +527,10 @@ export const useWorkflowService = () => {
           if (shareId) {
             loadedWorkflow.shareId = shareId
           }
-          loadedWorkflow.changeTracker.reset(workflowData)
+          loadedWorkflow.legacyId ??= getLegacyWorkflowId(workflowData.id)
+          loadedWorkflow.changeTracker.reset(
+            ensureWorkflowId(workflowData, loadedWorkflow.activeState?.id)
+          )
           loadedWorkflow.changeTracker.restore()
           return
         }
@@ -570,7 +557,10 @@ export const useWorkflowService = () => {
       loadedWorkflow.initialMode = freshLoadMode
       trackIfEnteringApp(loadedWorkflow)
     }
-    loadedWorkflow.changeTracker.reset(workflowData)
+    loadedWorkflow.legacyId ??= getLegacyWorkflowId(workflowData.id)
+    loadedWorkflow.changeTracker.reset(
+      ensureWorkflowId(workflowData, loadedWorkflow.activeState?.id)
+    )
     loadedWorkflow.changeTracker.restore()
   }
 
@@ -583,21 +573,12 @@ export const useWorkflowService = () => {
   ) => {
     const loadedWorkflow = await workflow.load()
     const workflowJSON = toRaw(loadedWorkflow.initialState)
-    const old = localStorage.getItem('litegrapheditor_clipboard')
     // unknown conversion: ComfyWorkflowJSON is stricter than LiteGraph's
     // serialisation schema.
-    const graph = new LGraph(workflowJSON as unknown as SerialisableGraph)
-    const canvasElement = document.createElement('canvas')
-    const canvas = new LGraphCanvas(canvasElement, graph, {
-      skip_events: true,
-      skip_render: true
-    })
-    canvas.selectItems()
-    canvas.copyToClipboard()
-    app.canvas.pasteFromClipboard(options)
-    if (old !== null) {
-      localStorage.setItem('litegrapheditor_clipboard', old)
-    }
+    const items = workflowToClipboardItems(
+      workflowJSON as unknown as SerialisableGraph
+    )
+    app.canvas._deserializeItems(items, options)
   }
 
   const loadNextOpenedWorkflow = async () => {
