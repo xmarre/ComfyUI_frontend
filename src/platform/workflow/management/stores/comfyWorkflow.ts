@@ -2,9 +2,12 @@ import { markRaw } from 'vue'
 
 import { t } from '@/i18n'
 import { getValidWorkflowViewState } from '@/platform/workflow/persistence/base/workflowViewState'
+import {
+  type ComfyWorkflowJSON,
+  validateComfyWorkflow
+} from '@/platform/workflow/validation/schemas/workflowSchema'
 import type { ChangeTracker } from '@/scripts/changeTracker'
 import { UserFile } from '@/stores/userFileStore'
-import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
 import type { MissingModelCandidate } from '@/platform/missingModel/types'
 import type { MissingMediaCandidate } from '@/platform/missingMedia/types'
 import type { MissingNodeType } from '@/types/comfy'
@@ -132,11 +135,20 @@ export class ComfyWorkflow extends UserFile {
 
     if (draft) {
       try {
-        draftState = JSON.parse(draft.data)
-        draftContent = draft.data
+        const parsedDraft = JSON.parse(draft.data) as unknown
+        const validatedDraft = await validateComfyWorkflow(parsedDraft, () => {})
+        if (!validatedDraft) {
+          console.warn('Invalid workflow draft, clearing it')
+          draftStore.removeDraft(this.path)
+          draft = undefined
+        } else {
+          draftState = validatedDraft
+          draftContent = draft.data
+        }
       } catch (err) {
         console.warn('Failed to parse workflow draft, clearing it', err)
         draftStore.removeDraft(this.path)
+        draft = undefined
       }
     }
 
