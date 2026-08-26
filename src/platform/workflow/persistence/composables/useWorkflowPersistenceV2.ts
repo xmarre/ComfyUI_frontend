@@ -31,10 +31,7 @@ import {
 } from '@/platform/workflow/management/stores/workflowStore'
 import { useSharedWorkflowUrlLoader } from '@/platform/workflow/sharing/composables/useSharedWorkflowUrlLoader'
 import { useTemplateUrlLoader } from '@/platform/workflow/templates/composables/useTemplateUrlLoader'
-import {
-  type ComfyWorkflowJSON,
-  validateComfyWorkflow
-} from '@/platform/workflow/validation/schemas/workflowSchema'
+import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
 import { api } from '@/scripts/api'
 import { app as comfyApp } from '@/scripts/app'
 import { PERSIST_DEBOUNCE_MS } from '../base/draftTypes'
@@ -45,6 +42,7 @@ import {
   prepareWorkflowLogoutTransition,
   registerWorkflowPersistenceFlush
 } from '../base/storageIO'
+import { isPersistedWorkflowData } from '../base/workflowDraftData'
 import {
   withWorkflowViewState,
   workflowViewStateEqual
@@ -475,9 +473,8 @@ export function useWorkflowPersistenceV2() {
         const draft = draftStore.getDraft(path)
         if (!draft?.isTemporary) continue
         try {
-          const parsed = JSON.parse(draft.data) as unknown
-          const workflowData = await validateComfyWorkflow(parsed, () => {})
-          if (!workflowData) {
+          const workflowData = JSON.parse(draft.data) as unknown
+          if (!isPersistedWorkflowData(workflowData)) {
             throw new Error('Invalid workflow draft payload')
           }
           workflowStore.createTemporary(draft.name, workflowData)
