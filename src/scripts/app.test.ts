@@ -2400,7 +2400,6 @@ describe('ComfyApp', () => {
       }
     })
 
-
     it('ignores drop events already handled by a Vue node', async () => {
       const dragOverNode = createMockNode({
         id: 1,

@@ -140,5 +140,4 @@ describe('useVueNodeDragAndDrop', () => {
     expect(isDropEventHandled(dropEvent)).toBe(true)
     expect(app.dragOverNode).toBeNull()
   })
-
 })
