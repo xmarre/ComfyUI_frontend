@@ -294,7 +294,7 @@ describe('workflow persistence lifecycle reconciliation', () => {
     expect(saveDraftSpy).toHaveBeenCalledOnce()
   })
 
-  it.each(['null', '[]', '42'])(
+  it.for(['null', '[]', '42'])(
     'rejects invalid temporary tab draft payload %s',
     async (draftData) => {
       const path = 'workflows/invalid-temporary.json'
