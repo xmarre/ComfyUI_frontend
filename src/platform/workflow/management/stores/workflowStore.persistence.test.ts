@@ -100,7 +100,7 @@ describe('workflow store draft reconciliation', () => {
       ...(draftGraph.extra ?? {}),
       ds: { scale: 1, offset: [40] },
       source: 'draft'
-    }
+    } as unknown as ComfyWorkflowJSON['extra']
 
     saveV2Draft(workflow.path, {
       data: JSON.stringify(draftGraph),
