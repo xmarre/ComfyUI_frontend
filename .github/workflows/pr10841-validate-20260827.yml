@@ -1,0 +1,69 @@
+name: PR 10841 mirror validation 20260827
+on:
+  push:
+    branches:
+      - mirror/pr-10841-validate-20260827
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate mirror candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git clone --no-tags --branch mirror/pr-10841-upstream-20260827 "https://x-access-token:${GH_TOKEN}@github.com/xmarre/ComfyUI_frontend.git" repo
+          cd repo
+          git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
+          git fetch --no-tags upstream main
+          test "$(git merge-base HEAD upstream/main)" = "0b2d9799b98ab4fa38994cc57f870cd3b241e88e"
+
+          corepack enable
+          pnpm install --frozen-lockfile
+
+          pnpm exec vitest run \
+            src/composables/usePaste.test.ts \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/scripts/app.test.ts
+
+          pnpm typecheck
+          pnpm oxlint:audit
+
+          pnpm exec eslint \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/node/useNodeDragAndDrop.ts \
+            src/composables/usePaste.test.ts \
+            src/composables/usePaste.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.ts \
+            src/utils/mediaUploadUtil.ts
+
+          pnpm exec oxfmt --check \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/node/useNodeDragAndDrop.ts \
+            src/composables/usePaste.test.ts \
+            src/composables/usePaste.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.ts \
+            src/utils/mediaUploadUtil.ts
+
+          git diff --check upstream/main..HEAD
