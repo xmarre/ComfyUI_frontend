@@ -31,7 +31,10 @@ import {
 } from '@/platform/workflow/management/stores/workflowStore'
 import { useSharedWorkflowUrlLoader } from '@/platform/workflow/sharing/composables/useSharedWorkflowUrlLoader'
 import { useTemplateUrlLoader } from '@/platform/workflow/templates/composables/useTemplateUrlLoader'
-import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
+import {
+  type ComfyWorkflowJSON,
+  validateComfyWorkflow
+} from '@/platform/workflow/validation/schemas/workflowSchema'
 import { api } from '@/scripts/api'
 import { app as comfyApp } from '@/scripts/app'
 import { PERSIST_DEBOUNCE_MS } from '../base/draftTypes'
@@ -467,22 +470,26 @@ export function useWorkflowPersistenceV2() {
       const { paths: storedWorkflows, activeIndex: storedActiveIndex } =
         restorableTabState
 
-      storedWorkflows.forEach((path: string) => {
-        if (workflowStore.getWorkflowByPath(path)) return
+      for (const path of storedWorkflows) {
+        if (workflowStore.getWorkflowByPath(path)) continue
         const draft = draftStore.getDraft(path)
-        if (!draft?.isTemporary) return
+        if (!draft?.isTemporary) continue
         try {
-          const workflowData = JSON.parse(draft.data)
+          const parsed = JSON.parse(draft.data) as unknown
+          const workflowData = await validateComfyWorkflow(parsed, () => {})
+          if (!workflowData) {
+            throw new Error('Invalid workflow draft payload')
+          }
           workflowStore.createTemporary(draft.name, workflowData)
         } catch (err) {
           console.warn(
-            'Failed to parse workflow draft, creating with default',
+            'Failed to restore workflow draft, creating with default',
             err
           )
           draftStore.removeDraft(path)
           workflowStore.createTemporary(draft.name)
         }
-      })
+      }
 
       workflowStore.openWorkflowsInBackground({
         left: storedWorkflows.slice(0, storedActiveIndex),
