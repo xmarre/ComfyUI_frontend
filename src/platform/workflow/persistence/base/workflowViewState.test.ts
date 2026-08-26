@@ -13,6 +13,11 @@ describe('workflowViewState', () => {
     expect(
       getValidWorkflowViewState({ scale: 0.75, offset: [12, -4] })
     ).toEqual({ scale: 0.75, offset: [12, -4] })
+    expect(getValidWorkflowViewState(null)).toBeNull()
+    expect(getValidWorkflowViewState(undefined)).toBeNull()
+    expect(getValidWorkflowViewState('0.75,12,-4')).toBeNull()
+    expect(getValidWorkflowViewState([])).toBeNull()
+    expect(getValidWorkflowViewState({})).toBeNull()
     expect(getValidWorkflowViewState({ scale: 1 })).toBeNull()
     expect(getValidWorkflowViewState({ scale: 0, offset: [0, 0] })).toBeNull()
     expect(getValidWorkflowViewState({ scale: -1, offset: [0, 0] })).toBeNull()
@@ -25,10 +30,12 @@ describe('workflowViewState', () => {
     expect(
       getValidWorkflowViewState({ scale: 1, offset: [0, Number.NaN] })
     ).toBeNull()
+    expect(getValidWorkflowViewState({ scale: 1, offset: [4] })).toBeNull()
   })
 
   it('adds the current viewport without mutating the serialized workflow', () => {
     const workflow = structuredClone(defaultGraph) as ComfyWorkflowJSON
+    const before = structuredClone(workflow)
     const result = withWorkflowViewState(
       workflow,
       { scale: 0.8, offset: [23, -17] },
@@ -37,7 +44,7 @@ describe('workflowViewState', () => {
 
     expect(result).not.toBe(workflow)
     expect(result.extra?.ds).toEqual({ scale: 0.8, offset: [23, -17] })
-    expect(workflow.extra?.ds).not.toEqual(result.extra?.ds)
+    expect(workflow).toEqual(before)
   })
 
   it('returns the original workflow when view restore is disabled or unavailable', () => {
