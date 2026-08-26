@@ -122,6 +122,35 @@ describe('workflow store draft reconciliation', () => {
     expect(workflow.isModified).toBe(false)
   })
 
+  it.each(['null', '[]', '42'])(
+    'rejects invalid persisted draft payload %s',
+    async (draftData) => {
+      await syncRemoteWorkflowsWithMeta([
+        { path: 'invalid.json', modified: 100, size: 1 }
+      ])
+
+      const workflow = store.getWorkflowByPath('workflows/invalid.json')!
+      const draftStore = saveV2Draft(workflow.path, {
+        data: draftData,
+        name: 'invalid.json',
+        isModified: true
+      })
+
+      vi.mocked(api.getUserData).mockResolvedValue({
+        status: 200,
+        text: () => Promise.resolve(defaultGraphJSON)
+      } as Response)
+
+      await workflow.load()
+
+      expect(draftStore.getDraft(workflow.path)).toBeNull()
+      expect(workflow.isModified).toBe(false)
+      expect(workflow.activeState?.version).toBe(
+        (JSON.parse(defaultGraphJSON) as ComfyWorkflowJSON).version
+      )
+    }
+  )
+
   it('keeps a restored temporary draft despite a newer synthetic timestamp', async () => {
     const path = 'workflows/restored-temporary.json'
     const baseGraph = JSON.parse(defaultGraphJSON) as ComfyWorkflowJSON
