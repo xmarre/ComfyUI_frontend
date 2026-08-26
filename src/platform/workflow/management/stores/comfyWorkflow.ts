@@ -1,6 +1,8 @@
 import { markRaw } from 'vue'
 
 import { t } from '@/i18n'
+import { isPersistedWorkflowData } from '@/platform/workflow/persistence/base/workflowDraftData'
+import { getValidWorkflowViewState } from '@/platform/workflow/persistence/base/workflowViewState'
 import type { ChangeTracker } from '@/scripts/changeTracker'
 import { UserFile } from '@/stores/userFileStore'
 import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
@@ -118,7 +120,11 @@ export class ComfyWorkflow extends UserFile {
     let draftState: ComfyWorkflowJSON | null = null
     let draftContent: string | null = null
 
-    if (draft) {
+    // Temporary workflows restored from a draft have a synthetic creation
+    // timestamp, not an authoritative backing-file modification time. Comparing
+    // the draft against that timestamp makes every restored temporary draft look
+    // stale and deletes it immediately after recovery.
+    if (draft && !this.isTemporary) {
       if (draft.updatedAt < this.lastModified) {
         draftStore.removeDraft(this.path)
         draft = undefined
@@ -127,11 +133,19 @@ export class ComfyWorkflow extends UserFile {
 
     if (draft) {
       try {
-        draftState = JSON.parse(draft.data)
-        draftContent = draft.data
+        const parsedDraft = JSON.parse(draft.data) as unknown
+        if (!isPersistedWorkflowData(parsedDraft)) {
+          console.warn('Invalid workflow draft, clearing it')
+          draftStore.removeDraft(this.path)
+          draft = undefined
+        } else {
+          draftState = parsedDraft
+          draftContent = draft.data
+        }
       } catch (err) {
         console.warn('Failed to parse workflow draft, clearing it', err)
         draftStore.removeDraft(this.path)
+        draft = undefined
       }
     }
 
@@ -146,13 +160,33 @@ export class ComfyWorkflow extends UserFile {
       throw new Error(`Workflow content is empty for '${this.path}'`)
     }
 
-    const initialState = JSON.parse(this.originalContent)
+    const initialState = JSON.parse(this.originalContent) as ComfyWorkflowJSON
+
+    // Older or malformed draft payloads may not carry a usable viewport. For a
+    // persisted workflow, retain the authoritative saved view when it is valid.
+    const savedViewState = getValidWorkflowViewState(initialState.extra?.ds)
+    const draftViewState = getValidWorkflowViewState(draftState?.extra?.ds)
+    if (draftState && !draftViewState && savedViewState) {
+      draftState = {
+        ...draftState,
+        extra: {
+          ...draftState.extra,
+          ds: savedViewState
+        }
+      }
+      draftContent = JSON.stringify(draftState)
+    }
+
     const { ChangeTracker } = await import('@/scripts/changeTracker')
     this.changeTracker = markRaw(new ChangeTracker(this, initialState))
     if (draftState && draftContent) {
       this.changeTracker.activeState = draftState
       this.content = draftContent
-      this._isModified = true
+      // New drafts persist this bit when the outgoing canvas snapshot is taken.
+      // Older V2 drafts lack it, so stay conservative and preserve the historical
+      // behavior of treating any recovered draft as modified rather than doing a
+      // full synchronous graph comparison during workflow activation.
+      this._isModified = draft?.isModified ?? true
       // Saved-workflow draft overlay path; direct persisted-draft restores
       // are touched in workflowDraftStoreV2.loadDraft().
       draftStore.markDraftUsed(this.path)
