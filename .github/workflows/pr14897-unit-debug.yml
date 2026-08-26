@@ -1,4 +1,4 @@
-name: PR 14897 focused unit debug
+name: PR 14897 final mirror validation
 
 on:
   push:
@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: mirror/pr-14897-20260825-compose-tests
+          ref: mirror/pr-14897-20260826-final-current-main
       - name: Setup frontend
         uses: ./.github/actions/setup-frontend
       - name: Run affected Vitest suites
@@ -32,3 +32,16 @@ jobs:
             src/platform/workflow/persistence/stores/workflowDraftStoreV2.persistenceControl.test.ts \
             src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts \
             src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts
+
+  lint-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: mirror/pr-14897-20260826-final-current-main
+      - name: Setup frontend
+        uses: ./.github/actions/setup-frontend
+      - name: Lint
+        run: pnpm lint
+      - name: Format check
+        run: pnpm format:check
