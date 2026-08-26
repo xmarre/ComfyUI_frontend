@@ -122,7 +122,7 @@ describe('workflow store draft reconciliation', () => {
     expect(workflow.isModified).toBe(false)
   })
 
-  it.each(['null', '[]', '42'])(
+  it.for(['null', '[]', '42'])(
     'rejects invalid persisted draft payload %s',
     async (draftData) => {
       await syncRemoteWorkflowsWithMeta([
