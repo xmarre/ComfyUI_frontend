@@ -1,0 +1,46 @@
+name: PR 14897 focused unit debug
+
+on:
+  push:
+    branches:
+      - mirror/pr-14897-20260826-unit-debug
+
+permissions:
+  contents: write
+
+jobs:
+  focused-tests:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Setup frontend
+        uses: ./.github/actions/setup-frontend
+      - name: Run affected Vitest suites and persist output
+        shell: bash
+        run: |
+          set +e
+          pnpm exec vitest run --reporter=verbose \
+            src/platform/workflow/core/services/workflowService.persistence.test.ts \
+            src/platform/workflow/core/services/workflowService.test.ts \
+            src/platform/workflow/management/stores/workflowStore.persistence.test.ts \
+            src/platform/workflow/persistence/base/workflowViewState.test.ts \
+            src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.reconciliation.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.collision.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.malformedPayload.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.recovery.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.persistenceControl.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts \
+            > pr14897-unit-debug.log 2>&1
+          status=$?
+          printf '\nEXIT_STATUS=%s\n' "$status" >> pr14897-unit-debug.log
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add pr14897-unit-debug.log
+          git commit -m 'debug: persist PR 14897 unit output' || true
+          git push origin HEAD:mirror/pr-14897-20260826-unit-debug
+          exit "$status"
