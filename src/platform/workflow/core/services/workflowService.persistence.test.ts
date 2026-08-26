@@ -95,12 +95,15 @@ function createLoadedWorkflow(): LoadedComfyWorkflow {
 
 describe('workflow service persistence reconciliation', () => {
   beforeEach(() => {
-    setActivePinia(createTestingPinia())
+    setActivePinia(createTestingPinia({ stubActions: false }))
     draftStoreMocks.saveDraft.mockReturnValue(true)
     draftStoreMocks.isPersistencePaused.mockReturnValue(false)
     draftStoreMocks.shouldNotifySaveFailure.mockReturnValue(true)
     vi.spyOn(useSettingStore(), 'get').mockImplementation((key: string) => {
-      return key === 'Comfy.Workflow.Persist'
+      return (
+        key === 'Comfy.Workflow.Persist' ||
+        key === 'Comfy.EnableWorkflowViewRestore'
+      )
     })
   })
 
@@ -114,17 +117,25 @@ describe('workflow service persistence reconciliation', () => {
     expect(draftStoreMocks.saveDraft).not.toHaveBeenCalled()
   })
 
-  it('persists the known dirty bit and marks a successful save', () => {
+  it('persists the known dirty bit, viewport, and marks a successful save', () => {
     const workflowStore = useWorkflowStore()
     const workflow = createLoadedWorkflow()
+    const viewState = { scale: 0.75, offset: [12, -4] }
     workflow.isModified = true
+    Object.assign(workflow.changeTracker, { ds: viewState })
     workflowStore.activeWorkflow = workflow
 
     useWorkflowService().beforeLoadNewGraph()
 
     expect(draftStoreMocks.saveDraft).toHaveBeenCalledWith(
       workflow.path,
-      JSON.stringify(workflow.activeState),
+      JSON.stringify({
+        ...workflow.activeState,
+        extra: {
+          ...workflow.activeState?.extra,
+          ds: viewState
+        }
+      }),
       {
         name: workflow.key,
         isTemporary: workflow.isTemporary,
