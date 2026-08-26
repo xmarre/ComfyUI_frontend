@@ -1,8 +1,21 @@
-import { describe, expect, it } from 'vitest'
+import { createTestingPinia } from '@pinia/testing'
+import { setActivePinia } from 'pinia'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { useWorkflowDraftStoreV2 } from './workflowDraftStoreV2'
 
 describe('workflowDraftStoreV2 persistence control', () => {
+  beforeEach(() => {
+    setActivePinia(createTestingPinia({ stubActions: false }))
+    localStorage.clear()
+    sessionStorage.clear()
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+  })
+
   it('supports nested idempotent persistence pauses', () => {
     const store = useWorkflowDraftStoreV2()
     const resumeOuter = store.pausePersistence()
