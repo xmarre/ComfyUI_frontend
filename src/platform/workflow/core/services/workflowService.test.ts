@@ -76,7 +76,10 @@ const draftStoreMocks = vi.hoisted(() => ({
   saveDraft: vi.fn(() => true),
   getDraft: vi.fn(),
   removeDraft: vi.fn(),
-  markDraftUsed: vi.fn()
+  markDraftUsed: vi.fn(),
+  isPersistencePaused: vi.fn(() => false),
+  shouldNotifySaveFailure: vi.fn(() => true),
+  markSaveSucceeded: vi.fn()
 }))
 
 vi.mock('@/services/dialogService', () => ({
