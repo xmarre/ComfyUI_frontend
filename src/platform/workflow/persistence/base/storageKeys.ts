@@ -44,18 +44,12 @@ export const StorageKeys = {
   },
 
   /**
-   * Individual draft payload key for localStorage when the draft key is known.
-   */
-  draftPayloadByKey(workspaceId: string, draftKey: string): string {
-    return `Comfy.Workflow.Draft.v2:${workspaceId}:${draftKey}`
-  },
-
-  /**
    * Individual draft payload key for localStorage.
    * @param path - Workflow path (will be hashed to create key)
    */
   draftPayload(path: string, workspaceId: string): string {
-    return this.draftPayloadByKey(workspaceId, hashPath(path))
+    const draftKey = hashPath(path)
+    return `Comfy.Workflow.Draft.v2:${workspaceId}:${draftKey}`
   },
 
   /**
