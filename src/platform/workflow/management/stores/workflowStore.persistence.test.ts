@@ -1,4 +1,5 @@
-import { createPinia, setActivePinia } from 'pinia'
+import { createTestingPinia } from '@pinia/testing'
+import { setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useSettingStore } from '@/platform/settings/settingStore'
@@ -68,7 +69,7 @@ describe('workflow store draft reconciliation', () => {
   }
 
   beforeEach(() => {
-    setActivePinia(createPinia())
+    setActivePinia(createTestingPinia({ stubActions: false }))
     localStorage.clear()
     store = useWorkflowStore()
     enableWorkflowPersistence()
@@ -82,16 +83,23 @@ describe('workflow store draft reconciliation', () => {
     } as Response)
   })
 
-  it('restores a clean persisted draft from the stored dirty-state metadata', async () => {
+  it('keeps the draft graph while falling back to the saved viewport', async () => {
     await syncRemoteWorkflowsWithMeta([
       { path: 'a.json', modified: 100, size: 1 }
     ])
 
     const workflow = store.getWorkflowByPath('workflows/a.json')!
+    const remoteGraph = JSON.parse(defaultGraphJSON) as ComfyWorkflowJSON
+    remoteGraph.extra = {
+      ...(remoteGraph.extra ?? {}),
+      ds: { scale: 1.25, offset: [40, 80] },
+      source: 'remote'
+    }
     const draftGraph = JSON.parse(defaultGraphJSON) as ComfyWorkflowJSON
     draftGraph.extra = {
       ...(draftGraph.extra ?? {}),
-      ds: { scale: 1.25, offset: [40, 80] }
+      ds: { scale: 1, offset: [40] },
+      source: 'draft'
     }
 
     saveV2Draft(workflow.path, {
@@ -102,14 +110,14 @@ describe('workflow store draft reconciliation', () => {
 
     vi.mocked(api.getUserData).mockResolvedValue({
       status: 200,
-      text: () => Promise.resolve(defaultGraphJSON)
+      text: () => Promise.resolve(JSON.stringify(remoteGraph))
     } as Response)
 
     await workflow.load()
 
-    expect(workflow.activeState?.extra?.ds).toEqual({
-      scale: 1.25,
-      offset: [40, 80]
+    expect(workflow.activeState?.extra).toMatchObject({
+      source: 'draft',
+      ds: { scale: 1.25, offset: [40, 80] }
     })
     expect(workflow.isModified).toBe(false)
   })
