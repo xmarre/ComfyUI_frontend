@@ -1,4 +1,5 @@
-import { createPinia, setActivePinia } from 'pinia'
+import { createTestingPinia } from '@pinia/testing'
+import { setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, nextTick, reactive } from 'vue'
 import { createI18n } from 'vue-i18n'
@@ -172,7 +173,7 @@ describe('workflow persistence lifecycle reconciliation', () => {
   }> = []
 
   beforeEach(() => {
-    setActivePinia(createPinia())
+    setActivePinia(createTestingPinia({ stubActions: false }))
     localStorage.clear()
     sessionStorage.clear()
     vi.useFakeTimers()
@@ -292,4 +293,40 @@ describe('workflow persistence lifecycle reconciliation', () => {
     await vi.runAllTimersAsync()
     expect(saveDraftSpy).toHaveBeenCalledOnce()
   })
+
+  it.each(['null', '[]', '42'])(
+    'rejects invalid temporary tab draft payload %s',
+    async (draftData) => {
+      const path = 'workflows/invalid-temporary.json'
+      const workflowStore = useWorkflowStore()
+      const draftStore = useWorkflowDraftStoreV2()
+      vi.spyOn(workflowStore, 'loadWorkflows').mockResolvedValue()
+      const createTemporarySpy = vi.spyOn(workflowStore, 'createTemporary')
+
+      expect(
+        draftStore.saveDraft(path, draftData, {
+          name: 'invalid-temporary.json',
+          isTemporary: true
+        })
+      ).toBe(true)
+      sessionStorage.setItem(
+        'Comfy.Workflow.OpenPaths:test-client',
+        JSON.stringify({
+          workspaceId: 'personal',
+          paths: [path],
+          activeIndex: 0
+        })
+      )
+
+      const { restoreWorkflowTabsState } = mountWorkflowPersistence()
+      await restoreWorkflowTabsState()
+
+      expect(draftStore.getDraft(path)).toBeNull()
+      expect(createTemporarySpy).toHaveBeenCalledWith('invalid-temporary.json')
+      expect(createTemporarySpy).not.toHaveBeenCalledWith(
+        'invalid-temporary.json',
+        expect.anything()
+      )
+    }
+  )
 })
