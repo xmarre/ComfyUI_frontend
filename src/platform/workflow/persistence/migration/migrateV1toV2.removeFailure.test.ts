@@ -99,9 +99,7 @@ describe('migrateV1toV2 quota cleanup rollback', () => {
     expect(localStorage.getItem(draftsKey)).toBe(originalDrafts)
     expect(localStorage.getItem(orderKey)).toBe(originalOrder)
     expect(
-      localStorage.getItem(
-        `Comfy.Workflow.Draft.v2:personal:${hashPath(path)}`
-      )
+      localStorage.getItem(`Comfy.Workflow.Draft.v2:personal:${hashPath(path)}`)
     ).toBeNull()
   })
 })
