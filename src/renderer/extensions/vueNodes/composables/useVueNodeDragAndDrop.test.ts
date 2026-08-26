@@ -3,6 +3,7 @@ import { shallowRef } from 'vue'
 
 import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
 import { app } from '@/scripts/app'
+import { isDropEventHandled } from '@/utils/eventUtils'
 
 import { useVueNodeDragAndDrop } from './useVueNodeDragAndDrop'
 
@@ -56,4 +57,88 @@ describe('useVueNodeDragAndDrop', () => {
     expect(dropEvent.defaultPrevented).toBe(false)
     expect(app.dragOverNode).toBeNull()
   })
+
+  it('lets URI-only drops bubble without invoking the node drop handler', async () => {
+    const onDragOver = vi.fn(() => true)
+    const onDragDrop = vi.fn().mockResolvedValue(true)
+    const node = {
+      id: 1,
+      onDragOver,
+      onDragDrop
+    } as unknown as LGraphNode
+    const dataTransfer = new DataTransfer()
+    dataTransfer.setData('text/uri-list', 'https://example.com/image.png')
+
+    const { handleDragOver, handleDrop } = useVueNodeDragAndDrop(
+      shallowRef<LGraphNode | null>(node),
+      vi.fn()
+    )
+    handleDragOver(createDragEvent('dragover', dataTransfer))
+
+    const dropEvent = createDragEvent('drop', dataTransfer)
+    await handleDrop(dropEvent)
+
+    expect(onDragDrop).not.toHaveBeenCalled()
+    expect(dropEvent.defaultPrevented).toBe(false)
+    expect(isDropEventHandled(dropEvent)).toBe(false)
+    expect(app.dragOverNode).toBeNull()
+  })
+
+  it('marks accepted drops handled and invokes the node drop handler', async () => {
+    const onDragOver = vi.fn(() => true)
+    const onDragDrop = vi.fn().mockResolvedValue(true)
+    const node = {
+      id: 1,
+      onDragOver,
+      onDragDrop
+    } as unknown as LGraphNode
+    const dataTransfer = new DataTransfer()
+    dataTransfer.items.add(
+      new File(['image'], 'image.png', { type: 'image/png' })
+    )
+
+    const { handleDragOver, handleDrop } = useVueNodeDragAndDrop(
+      shallowRef<LGraphNode | null>(node),
+      vi.fn()
+    )
+    handleDragOver(createDragEvent('dragover', dataTransfer))
+
+    const dropEvent = createDragEvent('drop', dataTransfer)
+    await handleDrop(dropEvent)
+
+    expect(onDragDrop).toHaveBeenCalledWith(dropEvent)
+    expect(dropEvent.defaultPrevented).toBe(true)
+    expect(isDropEventHandled(dropEvent)).toBe(true)
+    expect(app.dragOverNode).toBeNull()
+  })
+
+  it('reports rejected node drops and clears drag-over ownership', async () => {
+    const error = new Error('Upload failed')
+    const onError = vi.fn()
+    const onDragOver = vi.fn(() => true)
+    const onDragDrop = vi.fn().mockRejectedValue(error)
+    const node = {
+      id: 1,
+      onDragOver,
+      onDragDrop
+    } as unknown as LGraphNode
+    const dataTransfer = new DataTransfer()
+    dataTransfer.items.add(
+      new File(['image'], 'image.png', { type: 'image/png' })
+    )
+
+    const { handleDragOver, handleDrop } = useVueNodeDragAndDrop(
+      shallowRef<LGraphNode | null>(node),
+      onError
+    )
+    handleDragOver(createDragEvent('dragover', dataTransfer))
+
+    const dropEvent = createDragEvent('drop', dataTransfer)
+    await handleDrop(dropEvent)
+
+    expect(onError).toHaveBeenCalledWith(error)
+    expect(isDropEventHandled(dropEvent)).toBe(true)
+    expect(app.dragOverNode).toBeNull()
+  })
+
 })

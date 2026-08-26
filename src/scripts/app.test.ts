@@ -55,7 +55,10 @@ import {
   createTestSubgraphNode
 } from '@/lib/litegraph/src/subgraph/__fixtures__/subgraphHelpers'
 import { useWidgetValueStore } from '@/stores/widgetValueStore'
-import { extractFilesFromDragEvent } from '@/utils/eventUtils'
+import {
+  extractFilesFromDragEvent,
+  markDropEventHandled
+} from '@/utils/eventUtils'
 import type { importA1111 } from './pnginfo'
 
 type WorkflowService = ReturnType<typeof useWorkflowService>
@@ -2394,6 +2397,48 @@ describe('ComfyApp', () => {
         })
       } finally {
         releaseOpenWorkflow()
+      }
+    })
+
+
+    it('ignores drop events already handled by a Vue node', async () => {
+      const dragOverNode = createMockNode({
+        id: 1,
+        onDragOver: vi.fn(() => true),
+        onDragDrop: vi.fn().mockResolvedValue(true)
+      })
+      const positionNode = createMockNode({
+        id: 2,
+        onDragOver: vi.fn(() => true),
+        onDragDrop: vi.fn().mockResolvedValue(true)
+      })
+      const canvasContainer = document.createElement('div')
+      const canvasChild = document.createElement('canvas')
+      canvasContainer.append(canvasChild)
+      document.body.append(canvasContainer)
+
+      app.canvasContainer = canvasContainer
+      app.dragOverNode = dragOverNode
+      mockCanvas.adjustMouseEvent = vi.fn(setCanvasEventPosition)
+      mockCanvas.graph = {
+        change: vi.fn(),
+        getNodeOnPos: vi.fn(() => positionNode)
+      } as unknown as LGraph
+
+      try {
+        const handleDrop = installDocumentDropHandler(app)
+        const event = createDropEvent(new DataTransfer(), canvasChild)
+        markDropEventHandled(event)
+        await handleDrop(event)
+
+        expect(mockCanvas.adjustMouseEvent).not.toHaveBeenCalled()
+        expect(dragOverNode.onDragOver).not.toHaveBeenCalled()
+        expect(dragOverNode.onDragDrop).not.toHaveBeenCalled()
+        expect(positionNode.onDragOver).not.toHaveBeenCalled()
+        expect(positionNode.onDragDrop).not.toHaveBeenCalled()
+        expect(extractFilesFromDragEvent).not.toHaveBeenCalled()
+      } finally {
+        canvasContainer.remove()
       }
     })
 

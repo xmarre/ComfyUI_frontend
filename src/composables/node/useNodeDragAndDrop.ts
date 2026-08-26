@@ -35,8 +35,11 @@ export const useNodeDragAndDrop = <T>(
   const filterItemFiles = (items: DataTransferItemList | undefined) =>
     filterFiles(getFilesFromItems(items))
 
-  const hasFileItems = (items: DataTransferItemList | undefined) =>
-    !!items && Array.from(items).some((item) => item.kind === 'file')
+  const hasOpaqueFileItems = (items: DataTransferItemList | undefined) =>
+    !!items &&
+    Array.from(items).some(
+      (item) => item.kind === 'file' && item.getAsFile() === null
+    )
 
   const isDraggingFiles = (e: DragEvent | undefined) => {
     if (!e?.dataTransfer) return false
@@ -59,7 +62,7 @@ export const useNodeDragAndDrop = <T>(
     // Keep hover affordance permissive here; drop remains strictly filtered.
     // This hover result must never be cached as authorization for the drop.
     return (
-      hasFileItems(e.dataTransfer.items) ||
+      hasOpaqueFileItems(e.dataTransfer.items) ||
       e.dataTransfer.types.includes('text/uri-list')
     )
   }
