@@ -228,6 +228,8 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
     const targetPath = 'workflows/target.json'
     const evictedPath = 'workflows/evicted.json'
     const targetPayloadKey = StorageKeys.draftPayload(targetPath, 'personal')
+    const targetDraftKey = hashPath(targetPath)
+    const evictedDraftKey = hashPath(evictedPath)
     const indexKey = StorageKeys.draftIndex('personal')
 
     expect(
@@ -244,25 +246,29 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
     ).toBe(true)
     const previousPayload = storage.getItem(targetPayloadKey)!
 
-    let targetWrites = 0
-    let indexWrites = 0
+    let initialTargetQuotaInjected = false
     let directRollbackFailed = false
     storage.writeError = (key, value) => {
       if (key === targetPayloadKey) {
-        targetWrites++
-        if (targetWrites === 1) return quotaError()
-        if (
-          targetWrites === 3 &&
-          value === previousPayload &&
-          !directRollbackFailed
-        ) {
+        if (!initialTargetQuotaInjected && value !== previousPayload) {
+          initialTargetQuotaInjected = true
+          return quotaError()
+        }
+        if (value === previousPayload && !directRollbackFailed) {
           directRollbackFailed = true
           return quotaError()
         }
       }
       if (key === indexKey) {
-        indexWrites++
-        if (indexWrites === 4) return quotaError()
+        const index = JSON.parse(value) as {
+          entries?: Record<string, unknown>
+        }
+        if (
+          index.entries?.[targetDraftKey] &&
+          !index.entries?.[evictedDraftKey]
+        ) {
+          return quotaError()
+        }
       }
       return null
     }
@@ -274,8 +280,8 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
       })
     ).toBe(false)
 
+    expect(initialTargetQuotaInjected).toBe(true)
     expect(directRollbackFailed).toBe(true)
-    expect(targetWrites).toBeGreaterThan(3)
     expect(storage.getItem(targetPayloadKey)).toBe(previousPayload)
     expect(store.getDraft(targetPath)?.data).toBe('{"version":1}')
     expect(store.getDraft(evictedPath)?.data).toBe('{"id":"evicted"}')
@@ -304,22 +310,32 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
     ).toBe(true)
     const previousPayload = storage.getItem(targetPayloadKey)!
 
-    let targetWrites = 0
-    let indexWrites = 0
+    let initialTargetQuotaInjected = false
+    let previousPayloadRestoreAttempts = 0
     storage.writeError = (key, value) => {
       if (key === targetPayloadKey) {
-        targetWrites++
-        if (targetWrites === 1) return quotaError()
-        if (targetWrites === 3 && value === previousPayload) {
+        if (!initialTargetQuotaInjected && value !== previousPayload) {
+          initialTargetQuotaInjected = true
           return quotaError()
         }
-        if (targetWrites === 4 && value === previousPayload) {
-          return new Error('rollback interrupted')
+        if (value === previousPayload) {
+          previousPayloadRestoreAttempts++
+          if (previousPayloadRestoreAttempts === 1) return quotaError()
+          if (previousPayloadRestoreAttempts === 2) {
+            return new Error('rollback interrupted')
+          }
         }
       }
       if (key === indexKey) {
-        indexWrites++
-        if (indexWrites === 4) return quotaError()
+        const index = JSON.parse(value) as {
+          entries?: Record<string, unknown>
+        }
+        if (
+          index.entries?.[targetDraftKey] &&
+          !index.entries?.[evictedDraftKey]
+        ) {
+          return quotaError()
+        }
       }
       return null
     }
@@ -337,7 +353,8 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
       entries: Record<string, unknown>
     }
 
-    expect(targetWrites).toBeGreaterThan(3)
+    expect(initialTargetQuotaInjected).toBe(true)
+    expect(previousPayloadRestoreAttempts).toBe(2)
     expect(storage.getItem(targetPayloadKey)).toBeNull()
     expect(durableIndex.order).not.toContain(targetDraftKey)
     expect(durableIndex.entries[targetDraftKey]).toBeUndefined()
