@@ -6,27 +6,48 @@ on:
       - mirror/pr-14897-20260826-unit-debug
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  focused-tests:
+  patch-test-fixture:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Setup frontend
-        uses: ./.github/actions/setup-frontend
-      - name: Run affected Vitest suites
+        with:
+          ref: mirror/pr-14897-20260825-compose-tests
+          fetch-depth: 0
+      - name: Reconcile workflow draft store mock
+        shell: bash
         run: |
-          pnpm exec vitest run --reporter=verbose \
-            src/platform/workflow/core/services/workflowService.persistence.test.ts \
-            src/platform/workflow/core/services/workflowService.test.ts \
-            src/platform/workflow/management/stores/workflowStore.persistence.test.ts \
-            src/platform/workflow/persistence/base/workflowViewState.test.ts \
-            src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.reconciliation.test.ts \
-            src/platform/workflow/persistence/migration/migrateV1toV2.collision.test.ts \
-            src/platform/workflow/persistence/migration/migrateV1toV2.malformedPayload.test.ts \
-            src/platform/workflow/persistence/migration/migrateV1toV2.recovery.test.ts \
-            src/platform/workflow/persistence/migration/migrateV1toV2.test.ts \
-            src/platform/workflow/persistence/stores/workflowDraftStoreV2.persistenceControl.test.ts \
-            src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts \
-            src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/platform/workflow/core/services/workflowService.test.ts')
+          text = path.read_text()
+          old = """const draftStoreMocks = vi.hoisted(() => ({
+            saveDraft: vi.fn(() => true),
+            getDraft: vi.fn(),
+            removeDraft: vi.fn(),
+            markDraftUsed: vi.fn()
+          }))
+          """
+          new = """const draftStoreMocks = vi.hoisted(() => ({
+            saveDraft: vi.fn(() => true),
+            getDraft: vi.fn(),
+            removeDraft: vi.fn(),
+            markDraftUsed: vi.fn(),
+            isPersistencePaused: vi.fn(() => false),
+            shouldNotifySaveFailure: vi.fn(() => true),
+            markSaveSucceeded: vi.fn()
+          }))
+          """
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one mock block, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+          PY
+          git diff --check
+          git diff -- src/platform/workflow/core/services/workflowService.test.ts
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/platform/workflow/core/services/workflowService.test.ts
+          git commit -m 'test: reconcile workflow draft store mock'
+          git push origin HEAD:mirror/pr-14897-20260825-compose-tests
