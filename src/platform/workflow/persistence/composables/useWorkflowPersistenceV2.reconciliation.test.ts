@@ -201,6 +201,7 @@ describe('workflow persistence lifecycle reconciliation', () => {
       app.unmount()
       container.remove()
     }
+    vi.useRealTimers()
   })
 
   function mountWorkflowPersistence(): WorkflowPersistence {

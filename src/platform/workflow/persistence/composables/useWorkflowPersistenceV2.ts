@@ -78,7 +78,8 @@ export function useWorkflowPersistenceV2() {
     undefined,
     api.clientId ?? api.initialClientId ?? undefined
   )
-  if (migrationResult >= 0) draftStore.reset()
+  const migrationMutatedV2Storage = migrationResult >= 0
+  if (migrationMutatedV2Storage) draftStore.reset()
 
   const ensureTemplateQueryFromIntent = async () => {
     hydratePreservedQuery(TEMPLATE_NAMESPACE)

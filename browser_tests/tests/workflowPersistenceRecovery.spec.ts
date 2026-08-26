@@ -154,10 +154,8 @@ test.describe('Workflow persistence recovery regressions', () => {
       window.dispatchEvent(new Event('pagehide'))
     )
 
-    await expect(comfyPage.toast.toastErrors).toHaveCount(1)
-    await comfyPage.page.evaluate(
-      () => new Promise<void>((resolve) => setTimeout(resolve, 700))
-    )
+    // pagehide synchronously flushes pending workflow persistence, so this
+    // retrying assertion observes the final notification count without a hard wait.
     await expect(comfyPage.toast.toastErrors).toHaveCount(1)
   })
 
