@@ -1,0 +1,470 @@
+name: PR 10841 review fixes 20260831
+on:
+  push:
+    branches:
+      - automation/pr-10841-refresh-20260831
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply verified review fixes on mirror and validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git clone --no-tags --branch mirror/pr-10841-upstream-20260831 "https://x-access-token:${GH_TOKEN}@github.com/xmarre/ComfyUI_frontend.git" repo
+          cd repo
+          git config user.name "xmarre"
+          git config user.email "54859656+xmarre@users.noreply.github.com"
+
+          test "$(git rev-parse HEAD)" = "fda9286ba1c1c60f580caea5e742469a59d19486"
+
+          python - <<'PY'
+          from pathlib import Path
+
+          # 1) Reuse one strictly filtered file collector for hover validation/drop extraction.
+          p = Path("src/composables/node/useNodeDragAndDrop.ts")
+          s = p.read_text()
+          old = """  const filterItemFiles = (items: DataTransferItemList | undefined) =>
+            filterFiles(getFilesFromItems(items))
+
+          const hasOpaqueFileItems = (items: DataTransferItemList | undefined) =>
+          """
+          new = """  const filterItemFiles = (items: DataTransferItemList | undefined) =>
+            filterFiles(getFilesFromItems(items))
+
+          const collectFiles = (e: DragEvent | undefined) => {
+            const files = filterFiles(e?.dataTransfer?.files ?? [])
+            return files.length > 0 ? files : filterItemFiles(e?.dataTransfer?.items)
+          }
+
+          const hasOpaqueFileItems = (items: DataTransferItemList | undefined) =>
+          """
+          if old not in s:
+              raise SystemExit("useNodeDragAndDrop collector insertion point not found")
+          s = s.replace(old, new, 1)
+
+          old = """    if (filterFiles(e.dataTransfer.files).length > 0) {
+              return true
+            }
+
+            const itemFiles = getFilesFromItems(e.dataTransfer.items).filter(
+              (file) => !isSyntheticImageBmpPlaceholder(file)
+            )
+            if (itemFiles.length > 0) {
+              return itemFiles.some(fileFilter)
+            }
+          """
+          new = """    if (collectFiles(e).length > 0) return true
+          """
+          if old not in s:
+              raise SystemExit("useNodeDragAndDrop hover block not found")
+          s = s.replace(old, new, 1)
+
+          old = """  const isDraggingValidFiles = (e: DragEvent | undefined) => {
+            const files = filterFiles(e?.dataTransfer?.files ?? [])
+            if (files.length > 0) {
+              return true
+            }
+
+            const itemFiles = filterItemFiles(e?.dataTransfer?.items)
+            if (itemFiles.length > 0) {
+              return true
+            }
+
+            return !!e?.dataTransfer?.getData('text/uri-list')
+          }
+          """
+          new = """  const isDraggingValidFiles = (e: DragEvent | undefined) =>
+            collectFiles(e).length > 0 || !!e?.dataTransfer?.getData('text/uri-list')
+          """
+          if old not in s:
+              raise SystemExit("useNodeDragAndDrop validity block not found")
+          s = s.replace(old, new, 1)
+
+          old = """    let files = filterFiles(e.dataTransfer?.files ?? [])
+            if (!files.length) {
+              files = filterItemFiles(e.dataTransfer?.items)
+            }
+
+            if (files.length) {
+          """
+          new = """    const files = collectFiles(e)
+
+            if (files.length) {
+          """
+          if old not in s:
+              raise SystemExit("useNodeDragAndDrop extraction block not found")
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # 2) Add the missing node id to the rejection fixture.
+          p = Path("src/renderer/extensions/vueNodes/components/LGraphNode.test.ts")
+          s = p.read_text()
+          old = """      mockData.mockLgraphNode = {
+                onDragDrop,
+                onDragOver: vi.fn(() => false),
+                isSubgraphNode: () => false
+              }
+          """
+          new = """      mockData.mockLgraphNode = {
+                id: mockNodeData.id,
+                onDragDrop,
+                onDragOver: vi.fn(() => false),
+                isSubgraphNode: () => false
+              }
+          """
+          if old not in s:
+              raise SystemExit("LGraphNode rejection fixture not found")
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # 3) Extract the document generic file-drop pipeline into a reusable method.
+          p = Path("src/scripts/app.ts")
+          s = p.read_text()
+          start = s.index("  private addDropHandler() {")
+          marker = s.index("    // Always clear over node on drag leave", start)
+          new_prefix = """  async handleFileDrop(
+            event: DragEvent,
+            { skipNodeRouting = false }: { skipNodeRouting?: boolean } = {}
+          ): Promise<void> {
+            try {
+              if (!skipNodeRouting) {
+                const target = event.target
+                const isGraphCanvasDrop =
+                  target instanceof Node && this.canvasContainer.contains(target)
+
+                if (isDropEventHandled(event)) return
+
+                // Vue-node drops may already be defaultPrevented before bubbling here.
+                // Only skip already-handled drops outside the graph canvas area.
+                if (event.defaultPrevented && !isGraphCanvasDrop) return
+              }
+
+              event.preventDefault()
+              event.stopPropagation()
+
+              const previousDragOverNode = this.dragOverNode
+
+              // graph_mouse is only updated on mousemove, so when files are dragged
+              // in from another window the canvas-space cursor is stale. Sync it
+              // from the drop event so nodes created below land at the cursor.
+              this.canvas.adjustMouseEvent(event)
+              this.canvas.graph_mouse[0] = event.canvasX
+              this.canvas.graph_mouse[1] = event.canvasY
+
+              this.dragOverNode = null
+              if (previousDragOverNode) {
+                this.canvas.setDirty(false, true)
+              }
+
+              if (!skipNodeRouting) {
+                const nodeAtDropPosition = this.canvas.graph?.getNodeOnPos(
+                  event.canvasX,
+                  event.canvasY
+                )
+                const canUsePreviousDragOverNode =
+                  previousDragOverNode &&
+                  (previousDragOverNode.onDragOver?.(event) ?? true)
+                const dropNode = canUsePreviousDragOverNode
+                  ? previousDragOverNode
+                  : nodeAtDropPosition?.onDragOver?.(event) === true
+                    ? nodeAtDropPosition
+                    : null
+                // Node handles file drop, we dont use the built in onDropFile handler as its buggy
+                // If you drag multiple files it will call it multiple times with the same file
+                if (await dropNode?.onDragDrop?.(event)) return
+              }
+
+              const files = await extractFilesFromDragEvent(event)
+              if (files.length === 0) return
+
+              const workspace = useWorkspaceStore()
+              try {
+                workspace.spinner = true
+                const imageFiles = files.filter(hasImageType)
+                const audioFiles = files.filter(hasAudioType)
+                const videoFiles = files.filter(hasVideoType)
+                const totalMedia =
+                  imageFiles.length + audioFiles.length + videoFiles.length
+                const hasMultipleMedia = totalMedia > 1
+
+                const createdNodes: LGraphNode[] = []
+                const handleFileOptions = {
+                  deferWarnings: true,
+                  onNodeCreated: (node: LGraphNode) => createdNodes.push(node)
+                }
+
+                if (hasMultipleMedia) {
+                  if (imageFiles.length > 0) {
+                    await this.handleFileList(imageFiles)
+                  }
+                  if (audioFiles.length > 0) {
+                    await this.handleAudioFileList(audioFiles)
+                  }
+                  if (videoFiles.length > 0) {
+                    await this.handleVideoFileList(videoFiles)
+                  }
+                  for (const file of files.filter((f) => !isMediaFile(f))) {
+                    await this.handleFile(file, 'file_drop', handleFileOptions)
+                  }
+                } else {
+                  for (const file of files) {
+                    await this.handleFile(file, 'file_drop', handleFileOptions)
+                  }
+                }
+
+                this.positionNodes(createdNodes)
+              } finally {
+                workspace.spinner = false
+              }
+              useWorkflowService().showPendingWarnings()
+            } catch (error: unknown) {
+              useToastStore().addAlert(t('toastMessages.dropFileError', { error }))
+            }
+          }
+
+          /**
+           * Adds a handler allowing drag+drop of files onto the window to load workflows
+           */
+          private addDropHandler() {
+            // Get prompt from dropped PNG or json
+            useEventListener(document, 'drop', async (event: DragEvent) => {
+              await this.handleFileDrop(event)
+            })
+
+          """
+          s = s[:start] + new_prefix + s[marker:]
+          p.write_text(s)
+
+          # 4) Preserve false-return fallback in Vue without re-dispatching/bubbling.
+          p = Path("src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts")
+          s = p.read_text()
+          old = """    event.preventDefault()
+            event.stopPropagation()
+            markDropEventHandled(event)
+            app.dragOverNode = node
+
+            try {
+              if (!(await node.onDragDrop(event))) {
+                clearAppDragOverNode(node.id)
+              }
+            } catch (error) {
+              clearAppDragOverNode(node.id)
+              onError(error)
+            } finally {
+              clearDragOverState(node.id)
+            }
+          """
+          new = """    event.preventDefault()
+            event.stopPropagation()
+            app.dragOverNode = node
+
+            try {
+              if (await node.onDragDrop(event)) {
+                markDropEventHandled(event)
+              } else {
+                clearAppDragOverNode(node.id)
+                await app.handleFileDrop(event, { skipNodeRouting: true })
+                markDropEventHandled(event)
+              }
+            } catch (error) {
+              markDropEventHandled(event)
+              clearAppDragOverNode(node.id)
+              onError(error)
+            } finally {
+              clearDragOverState(node.id)
+            }
+          """
+          if old not in s:
+              raise SystemExit("Vue drop handling block not found")
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # 5) Extend direct composable tests for false-result delegation.
+          p = Path("src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts")
+          s = p.read_text()
+          old = """  app: {
+              dragOverNode: null,
+              canvas: { setDirty: vi.fn() }
+            }
+          }))
+          """
+          new = """  app: {
+              dragOverNode: null,
+              canvas: { setDirty: vi.fn() },
+              handleFileDrop: vi.fn().mockResolvedValue(undefined)
+            }
+          }))
+          """
+          if old not in s:
+              raise SystemExit("Vue test app mock not found")
+          s = s.replace(old, new, 1)
+
+          old = """  beforeEach(() => {
+              app.dragOverNode = null
+            })
+          """
+          new = """  beforeEach(() => {
+              app.dragOverNode = null
+              vi.mocked(app.handleFileDrop).mockClear()
+            })
+          """
+          if old not in s:
+              raise SystemExit("Vue test beforeEach not found")
+          s = s.replace(old, new, 1)
+
+          anchor = """  it('reports rejected node drops and clears drag-over ownership', async () => {
+          """
+          test = """  it('delegates declined node drops to the document file fallback once', async () => {
+              const onDragOver = vi.fn(() => true)
+              const onDragDrop = vi.fn().mockResolvedValue(false)
+              const node = {
+                id: 1,
+                onDragOver,
+                onDragDrop
+              } as unknown as LGraphNode
+              const dataTransfer = new DataTransfer()
+              dataTransfer.items.add(
+                new File(['image'], 'image.png', { type: 'image/png' })
+              )
+
+              const { handleDragOver, handleDrop } = useVueNodeDragAndDrop(
+                shallowRef<LGraphNode | null>(node),
+                vi.fn()
+              )
+              handleDragOver(createDragEvent('dragover', dataTransfer))
+
+              const dropEvent = createDragEvent('drop', dataTransfer)
+              await handleDrop(dropEvent)
+
+              expect(onDragDrop).toHaveBeenCalledOnce()
+              expect(app.handleFileDrop).toHaveBeenCalledWith(dropEvent, {
+                skipNodeRouting: true
+              })
+              expect(isDropEventHandled(dropEvent)).toBe(true)
+              expect(app.dragOverNode).toBeNull()
+            })
+
+          """
+          if anchor not in s:
+              raise SystemExit("Vue test insertion anchor not found")
+          s = s.replace(anchor, test + anchor, 1)
+
+          # Error path must not invoke generic fallback.
+          old = """    expect(onError).toHaveBeenCalledWith(error)
+              expect(isDropEventHandled(dropEvent)).toBe(true)
+              expect(app.dragOverNode).toBeNull()
+          """
+          new = """    expect(onError).toHaveBeenCalledWith(error)
+              expect(app.handleFileDrop).not.toHaveBeenCalled()
+              expect(isDropEventHandled(dropEvent)).toBe(true)
+              expect(app.dragOverNode).toBeNull()
+          """
+          if old not in s:
+              raise SystemExit("Vue error assertions not found")
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # 6) Add document-handler coverage for an accepting node under cursor
+          # and for skipNodeRouting bypassing node callbacks.
+          p = Path("src/scripts/app.test.ts")
+          s = p.read_text()
+          anchor = """    it('preserves aggregate drag-over targets without onDragOver', async () => {
+          """
+          tests = """    it('routes drops to an accepting node at the final canvas position', async () => {
+              const positionNode = createMockNode({
+                id: 2,
+                onDragOver: vi.fn(() => true),
+                onDragDrop: vi.fn().mockResolvedValue(true)
+              })
+              const canvasContainer = document.createElement('div')
+              const canvasChild = document.createElement('canvas')
+              canvasContainer.append(canvasChild)
+              document.body.append(canvasContainer)
+
+              app.canvasContainer = canvasContainer
+              app.dragOverNode = null
+              mockCanvas.adjustMouseEvent = vi.fn(setCanvasEventPosition)
+              mockCanvas.graph = {
+                change: vi.fn(),
+                getNodeOnPos: vi.fn(() => positionNode)
+              } as unknown as LGraph
+
+              try {
+                const handleDrop = installDocumentDropHandler(app)
+                const event = createDropEvent(new DataTransfer(), canvasChild)
+                await handleDrop(event)
+
+                expect(positionNode.onDragOver).toHaveBeenCalledWith(event)
+                expect(positionNode.onDragDrop).toHaveBeenCalledWith(event)
+                expect(extractFilesFromDragEvent).not.toHaveBeenCalled()
+              } finally {
+                canvasContainer.remove()
+              }
+            })
+
+            it('skips node routing when continuing a declined Vue-node drop', async () => {
+              const dragOverNode = createMockNode({
+                id: 1,
+                onDragOver: vi.fn(() => true),
+                onDragDrop: vi.fn().mockResolvedValue(false)
+              })
+              const positionNode = createMockNode({
+                id: 2,
+                onDragOver: vi.fn(() => true),
+                onDragDrop: vi.fn().mockResolvedValue(true)
+              })
+              const canvasContainer = document.createElement('div')
+              const canvasChild = document.createElement('canvas')
+              canvasContainer.append(canvasChild)
+              document.body.append(canvasContainer)
+
+              app.canvasContainer = canvasContainer
+              app.dragOverNode = dragOverNode
+              mockCanvas.adjustMouseEvent = vi.fn(setCanvasEventPosition)
+              mockCanvas.graph = {
+                change: vi.fn(),
+                getNodeOnPos: vi.fn(() => positionNode)
+              } as unknown as LGraph
+              vi.mocked(extractFilesFromDragEvent).mockResolvedValue([])
+
+              try {
+                const event = createDropEvent(new DataTransfer(), canvasChild)
+                event.preventDefault()
+                await app.handleFileDrop(event, { skipNodeRouting: true })
+
+                expect(dragOverNode.onDragOver).not.toHaveBeenCalled()
+                expect(dragOverNode.onDragDrop).not.toHaveBeenCalled()
+                expect(positionNode.onDragOver).not.toHaveBeenCalled()
+                expect(positionNode.onDragDrop).not.toHaveBeenCalled()
+                expect(extractFilesFromDragEvent).toHaveBeenCalledWith(event)
+              } finally {
+                canvasContainer.remove()
+              }
+            })
+
+          """
+          if anchor not in s:
+              raise SystemExit("app test insertion anchor not found")
+          s = s.replace(anchor, tests + anchor, 1)
+          p.write_text(s)
+          PY
+
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm exec oxfmt --write             src/composables/node/useNodeDragAndDrop.ts             src/renderer/extensions/vueNodes/components/LGraphNode.test.ts             src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts             src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts             src/scripts/app.ts             src/scripts/app.test.ts
+          git add -u
+
+          pnpm exec vitest run             src/composables/usePaste.test.ts             src/composables/node/useNodeDragAndDrop.test.ts             src/utils/__tests__/eventUtils.test.ts             src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts             src/renderer/extensions/vueNodes/components/LGraphNode.test.ts             src/scripts/app.test.ts
+          pnpm typecheck
+          pnpm oxlint:audit
+          pnpm exec eslint             src/composables/node/useNodeDragAndDrop.test.ts             src/composables/node/useNodeDragAndDrop.ts             src/composables/usePaste.test.ts             src/composables/usePaste.ts             src/renderer/extensions/vueNodes/components/LGraphNode.test.ts             src/renderer/extensions/vueNodes/components/LGraphNode.vue             src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts             src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts             src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts             src/scripts/app.test.ts             src/scripts/app.ts             src/utils/__tests__/eventUtils.test.ts             src/utils/eventUtils.ts             src/utils/mediaUploadUtil.ts
+          pnpm exec oxfmt --check             src/composables/node/useNodeDragAndDrop.test.ts             src/composables/node/useNodeDragAndDrop.ts             src/composables/usePaste.test.ts             src/composables/usePaste.ts             src/renderer/extensions/vueNodes/components/LGraphNode.test.ts             src/renderer/extensions/vueNodes/components/LGraphNode.vue             src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts             src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts             src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts             src/scripts/app.test.ts             src/scripts/app.ts             src/utils/__tests__/eventUtils.test.ts             src/utils/eventUtils.ts             src/utils/mediaUploadUtil.ts
+          git diff --check --cached
+
+          git commit -m "test: preserve declined Vue drop fallback"
+          echo "FIX_SHA=$(git rev-parse HEAD)"
+          git push origin HEAD:mirror/pr-10841-upstream-20260831
