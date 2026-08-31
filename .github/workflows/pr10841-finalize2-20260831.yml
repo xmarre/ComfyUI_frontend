@@ -1,0 +1,154 @@
+name: PR 10841 final validate 20260831b
+on:
+  push:
+    branches:
+      - automation/pr-10841-finalize2-20260831
+permissions:
+  contents: write
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate review-fixed mirror and squash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git clone --no-tags --branch mirror/pr-10841-upstream-20260831 "https://x-access-token:${GH_TOKEN}@github.com/xmarre/ComfyUI_frontend.git" repo
+          cd repo
+          git config user.name "xmarre"
+          git config user.email "54859656+xmarre@users.noreply.github.com"
+          git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
+          git fetch --no-tags upstream main
+
+          test "$(git rev-parse HEAD)" = "86d719d0d789de9692fca10ab6a8de66efb36964"
+          test "$(git rev-parse upstream/main)" = "3c5a400d9b6ac46e7a8712c58bf3111ca4ec8008"
+
+          expected="$(cat <<'EOF'
+          src/composables/node/useNodeDragAndDrop.test.ts
+          src/composables/node/useNodeDragAndDrop.ts
+          src/composables/usePaste.test.ts
+          src/composables/usePaste.ts
+          src/renderer/extensions/vueNodes/components/LGraphNode.test.ts
+          src/renderer/extensions/vueNodes/components/LGraphNode.vue
+          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts
+          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts
+          src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts
+          src/scripts/app.test.ts
+          src/scripts/app.ts
+          src/utils/__tests__/eventUtils.test.ts
+          src/utils/eventUtils.ts
+          src/utils/mediaUploadUtil.ts
+          src/workbench/extensions/agent/AgentPanelRoot.test.ts
+          src/workbench/extensions/agent/AgentPanelRoot.vue
+          EOF
+          )"
+          actual="$(git diff --name-only upstream/main..HEAD | sort)"
+          test "$actual" = "$(printf '%s\n' "$expected" | sort)"
+
+          corepack enable
+          pnpm install --frozen-lockfile
+
+          pnpm exec oxfmt --write \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/node/useNodeDragAndDrop.ts \
+            src/composables/usePaste.test.ts \
+            src/composables/usePaste.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.ts \
+            src/utils/mediaUploadUtil.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.vue
+          git add -u
+
+          pnpm exec vitest run \
+            src/composables/usePaste.test.ts \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/scripts/app.test.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts
+
+          pnpm typecheck
+          pnpm oxlint:audit
+
+          pnpm exec eslint \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/node/useNodeDragAndDrop.ts \
+            src/composables/usePaste.test.ts \
+            src/composables/usePaste.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.ts \
+            src/utils/mediaUploadUtil.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.vue
+
+          pnpm exec oxfmt --check \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/node/useNodeDragAndDrop.ts \
+            src/composables/usePaste.test.ts \
+            src/composables/usePaste.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.ts \
+            src/utils/mediaUploadUtil.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.vue
+
+          git diff --check upstream/main..HEAD
+
+          git reset --soft upstream/main
+          git commit -m "fix: restore Vue media drag and paste handling"
+
+          test "$(git rev-list --count upstream/main..HEAD)" = "1"
+          test "$(git rev-parse HEAD^)" = "$(git rev-parse upstream/main)"
+          actual="$(git diff --name-only upstream/main..HEAD | sort)"
+          test "$actual" = "$(printf '%s\n' "$expected" | sort)"
+
+          pnpm exec oxfmt --check \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/node/useNodeDragAndDrop.ts \
+            src/composables/usePaste.test.ts \
+            src/composables/usePaste.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.ts \
+            src/utils/mediaUploadUtil.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.vue
+          git diff --check upstream/main..HEAD
+
+          echo "FINAL_SHA=$(git rev-parse HEAD)"
+          echo "FINAL_PARENT=$(git rev-parse HEAD^)"
+          echo "FINAL_TREE=$(git rev-parse HEAD^{tree})"
+          git diff --stat upstream/main..HEAD
+
+          git push --force-with-lease origin HEAD:mirror/pr-10841-upstream-20260831
