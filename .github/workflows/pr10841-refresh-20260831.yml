@@ -1,0 +1,150 @@
+name: PR 10841 refresh validate 20260831
+on:
+  push:
+    branches:
+      - automation/pr-10841-refresh-20260831
+permissions:
+  contents: write
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rebase candidate onto latest upstream and validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git clone --no-tags --branch mirror/pr-10841-upstream-20260831 "https://x-access-token:${GH_TOKEN}@github.com/xmarre/ComfyUI_frontend.git" repo
+          cd repo
+          git config user.name "xmarre"
+          git config user.email "54859656+xmarre@users.noreply.github.com"
+          git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
+          git fetch --no-tags upstream main
+          git fetch --no-tags origin da6cad0493dc3bfa5b94e177a9d45d365ab7d219
+
+          test "$(git rev-parse upstream/main)" = "f954e479a37b168a9596aa05a1ce1dec1e9a93b4"
+          test "$(git rev-parse HEAD)" = "f954e479a37b168a9596aa05a1ce1dec1e9a93b4"
+
+          if ! git cherry-pick --no-commit da6cad0493dc3bfa5b94e177a9d45d365ab7d219; then
+            echo "::error::Cherry-pick produced conflicts"
+            echo "CONFLICTED_FILES:"
+            git diff --name-only --diff-filter=U
+            git status --short
+            exit 2
+          fi
+
+          expected="$(cat <<'EOF'
+          src/composables/node/useNodeDragAndDrop.test.ts
+          src/composables/node/useNodeDragAndDrop.ts
+          src/composables/usePaste.test.ts
+          src/composables/usePaste.ts
+          src/renderer/extensions/vueNodes/components/LGraphNode.test.ts
+          src/renderer/extensions/vueNodes/components/LGraphNode.vue
+          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts
+          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts
+          src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts
+          src/scripts/app.test.ts
+          src/scripts/app.ts
+          src/utils/__tests__/eventUtils.test.ts
+          src/utils/eventUtils.ts
+          src/utils/mediaUploadUtil.ts
+          EOF
+          )"
+          actual="$(git diff --name-only --cached | sort)"
+          test "$actual" = "$(printf '%s\n' "$expected" | sort)"
+
+          corepack enable
+          pnpm install --frozen-lockfile
+
+          pnpm exec oxfmt --write \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/node/useNodeDragAndDrop.ts \
+            src/composables/usePaste.test.ts \
+            src/composables/usePaste.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.ts \
+            src/utils/mediaUploadUtil.ts
+          git add -u
+
+          pnpm exec vitest run \
+            src/composables/usePaste.test.ts \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/scripts/app.test.ts
+
+          pnpm typecheck
+          pnpm oxlint:audit
+
+          pnpm exec eslint \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/node/useNodeDragAndDrop.ts \
+            src/composables/usePaste.test.ts \
+            src/composables/usePaste.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.ts \
+            src/utils/mediaUploadUtil.ts
+
+          pnpm exec oxfmt --check \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/node/useNodeDragAndDrop.ts \
+            src/composables/usePaste.test.ts \
+            src/composables/usePaste.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.ts \
+            src/utils/mediaUploadUtil.ts
+
+          git diff --check --cached
+          git commit -m "fix: restore Vue media drag and paste handling"
+
+          test "$(git rev-list --count upstream/main..HEAD)" = "1"
+          test "$(git rev-parse HEAD^)" = "$(git rev-parse upstream/main)"
+          actual="$(git diff --name-only upstream/main..HEAD | sort)"
+          test "$actual" = "$(printf '%s\n' "$expected" | sort)"
+
+          pnpm exec oxfmt --check \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/node/useNodeDragAndDrop.ts \
+            src/composables/usePaste.test.ts \
+            src/composables/usePaste.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.ts \
+            src/utils/mediaUploadUtil.ts
+          git diff --check upstream/main..HEAD
+
+          echo "FINAL_SHA=$(git rev-parse HEAD)"
+          echo "FINAL_PARENT=$(git rev-parse HEAD^)"
+          echo "FINAL_TREE=$(git rev-parse HEAD^{tree})"
+          git diff --stat upstream/main..HEAD
+
+          git push --force-with-lease origin HEAD:mirror/pr-10841-upstream-20260831
