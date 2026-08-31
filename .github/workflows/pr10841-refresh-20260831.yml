@@ -9,7 +9,7 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
-      - name: Rebase candidate onto latest upstream and validate
+      - name: Resolve latest upstream conflicts and validate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -22,17 +22,36 @@ jobs:
           git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
           git fetch --no-tags upstream main
           git fetch --no-tags origin da6cad0493dc3bfa5b94e177a9d45d365ab7d219
+          git fetch --no-tags origin 52c83cfb41e2dbe232d428282e2c9296992cab43
 
           test "$(git rev-parse upstream/main)" = "f954e479a37b168a9596aa05a1ce1dec1e9a93b4"
           test "$(git rev-parse HEAD)" = "f954e479a37b168a9596aa05a1ce1dec1e9a93b4"
 
-          if ! git cherry-pick --no-commit da6cad0493dc3bfa5b94e177a9d45d365ab7d219; then
-            echo "::error::Cherry-pick produced conflicts"
-            echo "CONFLICTED_FILES:"
-            git diff --name-only --diff-filter=U
-            git status --short
+          set +e
+          git cherry-pick --no-commit da6cad0493dc3bfa5b94e177a9d45d365ab7d219
+          cherry_status=$?
+          set -e
+
+          if [ "$cherry_status" -eq 0 ]; then
+            echo "::error::Expected the known eventUtils conflicts, but cherry-pick was clean"
             exit 2
           fi
+
+          conflicts="$(git diff --name-only --diff-filter=U | sort)"
+          expected_conflicts="$(printf '%s\n'             src/utils/__tests__/eventUtils.test.ts             src/utils/eventUtils.ts | sort)"
+          if [ "$conflicts" != "$expected_conflicts" ]; then
+            echo "::error::Conflict set changed unexpectedly"
+            echo "Expected:"
+            printf '%s\n' "$expected_conflicts"
+            echo "Actual:"
+            printf '%s\n' "$conflicts"
+            exit 3
+          fi
+
+          git show 52c83cfb41e2dbe232d428282e2c9296992cab43:src/utils/eventUtils.ts > src/utils/eventUtils.ts
+          git show 52c83cfb41e2dbe232d428282e2c9296992cab43:src/utils/__tests__/eventUtils.test.ts > src/utils/__tests__/eventUtils.test.ts
+          git add src/utils/eventUtils.ts src/utils/__tests__/eventUtils.test.ts
+          git cherry-pick --quit
 
           expected="$(cat <<'EOF'
           src/composables/node/useNodeDragAndDrop.test.ts
