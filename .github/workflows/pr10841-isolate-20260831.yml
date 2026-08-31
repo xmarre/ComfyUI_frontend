@@ -1,0 +1,31 @@
+name: PR 10841 isolate review tests
+on:
+  push:
+    branches:
+      - automation/pr-10841-isolate-20260831
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Isolate agent and drag-drop suites
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git clone --no-tags --branch mirror/pr-10841-upstream-20260831 "https://x-access-token:${GH_TOKEN}@github.com/xmarre/ComfyUI_frontend.git" repo
+          cd repo
+          test "$(git rev-parse HEAD)" = "86d719d0d789de9692fca10ab6a8de66efb36964"
+          corepack enable
+          pnpm install --frozen-lockfile
+
+          echo "=== AGENT SUITE ALONE ==="
+          pnpm exec vitest run src/workbench/extensions/agent/AgentPanelRoot.test.ts
+
+          echo "=== DRAG/DROP SUITES ALONE ==="
+          pnpm exec vitest run \
+            src/composables/usePaste.test.ts \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/scripts/app.test.ts
