@@ -1,0 +1,18 @@
+name: PR 10841 upstream agent baseline
+on:
+  push:
+    branches:
+      - automation/pr-10841-agent-baseline-20260831
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run upstream AgentPanelRoot suite
+        run: |
+          set -euo pipefail
+          git clone --no-tags --branch main https://github.com/Comfy-Org/ComfyUI_frontend.git repo
+          cd repo
+          test "$(git rev-parse HEAD)" = "3c5a400d9b6ac46e7a8712c58bf3111ca4ec8008"
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm exec vitest run src/workbench/extensions/agent/AgentPanelRoot.test.ts
