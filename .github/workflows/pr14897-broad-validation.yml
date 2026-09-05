@@ -1,0 +1,50 @@
+name: PR 14897 exact candidate broad validation
+
+on:
+  push:
+    branches:
+      - mirror/pr-14897-20260905-validation
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout validation wrapper
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Pin exact candidate tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          CANDIDATE=13e4329d5c8047a27904d1833edbb2aca6d0fe19
+          git reset --hard "$CANDIDATE"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          test "$(git rev-parse HEAD^)" = ca54f4bd2eb03b9fc992feee3aff3b9700f73395
+          test "$(git rev-list --count ca54f4bd2eb03b9fc992feee3aff3b9700f73395..HEAD)" = 1
+
+      - name: Setup frontend
+        uses: ./.github/actions/setup-frontend
+
+      - name: Canonical lint, format, locale, ADR, knip, and typecheck suite
+        uses: ./.github/actions/lint-format-verify
+
+      - name: Build-config typecheck
+        run: pnpm typecheck:build
+
+      - name: Full Vitest suite with coverage
+        run: pnpm test:coverage
+
+      - name: Production build
+        run: pnpm build
+
+      - name: Verify exact candidate remained unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 13e4329d5c8047a27904d1833edbb2aca6d0fe19
+          git diff --exit-code
