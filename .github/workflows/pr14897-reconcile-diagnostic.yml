@@ -1,0 +1,40 @@
+name: PR 14897 reconciliation diagnostic
+
+on:
+  push:
+    branches:
+      - mirror/pr-14897-20260905-work
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-conflicts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reproduce cherry-pick conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'PR 14897 reconciliation diagnostic'
+          git config user.email 'actions@users.noreply.github.com'
+          git fetch origin fix/workflow-draft-quota-recovery
+          set +e
+          git cherry-pick 82e5fa6b9d5e258d5722a33e0d4ac4198d782a09
+          status=$?
+          set -e
+          echo "cherry_pick_status=$status"
+          echo '=== UNMERGED FILES ==='
+          git diff --name-only --diff-filter=U
+          echo '=== STATUS ==='
+          git status --short
+          for file in $(git diff --name-only --diff-filter=U); do
+            echo "=== CONFLICT: $file ==="
+            git checkout --conflict=diff3 -- "$file"
+            grep -n -B 20 -A 40 -E '^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)' "$file" || true
+          done
+          git cherry-pick --abort || true
+          test "$status" -ne 0
