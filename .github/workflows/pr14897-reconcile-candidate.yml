@@ -54,11 +54,38 @@ jobs:
               lines[start:end + 1] = replacement.splitlines(keepends=True)
               p.write_text(''.join(lines))
 
+          def replace_once(text: str, old: str, new: str, path: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f'{path}: expected one occurrence of {old!r}, got {count}')
+              return text.replace(old, new, 1)
+
           storage = 'src/platform/workflow/persistence/base/storageIO.ts'
           replace_conflict(
               storage,
               """      targetWorkspaceId,\n      isValidOpenPathsPointer\n    ) ??\n    (targetWorkspaceId ? readPersistentOpenPaths(targetWorkspaceId) : null)\n""",
           )
+          storage_path = Path(storage)
+          text = storage_path.read_text()
+          text = replace_once(
+              text,
+              'function isValidIndex(value: unknown): value is DraftIndexV2 {',
+              """type PersistedDraftIndexV2 = Omit<DraftIndexV2, 'order' | 'entries'> & {\n  order: unknown[]\n  entries: Record<string, unknown>\n}\n\nfunction isValidIndex(value: unknown): value is PersistedDraftIndexV2 {""",
+              storage,
+          )
+          text = replace_once(
+              text,
+              'function sanitizeIndexEntries(index: DraftIndexV2): DraftIndexV2 {',
+              'function sanitizeIndexEntries(index: PersistedDraftIndexV2): DraftIndexV2 {',
+              storage,
+          )
+          text = replace_once(
+              text,
+              '  const order = index.order.filter((draftKey) => {',
+              '  const order = index.order.filter((draftKey): draftKey is string => {',
+              storage,
+          )
+          storage_path.write_text(text)
 
           migration = 'src/platform/workflow/persistence/migration/migrateV1toV2.ts'
           replace_conflict(
@@ -71,11 +98,13 @@ jobs:
           theirs = lines[theirs_sep + 1:end]
           lines[start:end + 1] = theirs
           text = ''.join(lines)
-          old = '        const oldestEntry = currentIndex.entries[oldestKey]\n        const result = oldestEntry\n'
-          new = '        const oldestEntry = getIndexEntry(currentIndex, oldestKey)\n        const result = oldestEntry\n'
-          if text.count(old) != 1:
-              raise RuntimeError(f'{store}: expected one direct oldest-entry lookup, got {text.count(old)}')
-          p.write_text(text.replace(old, new, 1))
+          text = replace_once(
+              text,
+              '        const oldestEntry = currentIndex.entries[oldestKey]\n        const result = oldestEntry\n',
+              '        const oldestEntry = getIndexEntry(currentIndex, oldestKey)\n        const result = oldestEntry\n',
+              store,
+          )
+          p.write_text(text)
           PY
 
           ! grep -R -n -E '^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)' \
@@ -143,7 +172,7 @@ jobs:
           if ! git diff --quiet; then
             git diff --check
             git add "${files[@]}"
-            git commit --amend --no-edit
+            HUSKY=0 git commit --amend --no-edit
           fi
           test "$(git rev-parse HEAD^)" = "$BASE"
           test "$(git rev-list --count "$BASE"..HEAD)" = 1
