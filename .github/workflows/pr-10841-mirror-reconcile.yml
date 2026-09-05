@@ -1,4 +1,4 @@
-name: PR 10841 mirror reconcile probe
+name: PR 10841 mirror reconcile
 
 on:
   push:
@@ -6,34 +6,316 @@ on:
       - mirror/pr-10841-20260905-work
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  probe:
+  reconcile:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Reproduce current upstream conflicts
+
+      - name: Reconcile onto current upstream main
         shell: bash
         run: |
-          set -u
-          git config user.name "PR 10841 mirror probe"
+          set -euo pipefail
+          BASE=ca54f4bd2eb03b9fc992feee3aff3b9700f73395
+          PR_HEAD=96bd8910108c99e9e5b394ea158eaf5f4f3059b8
+
+          git config user.name "xmarre"
           git config user.email "54859656+xmarre@users.noreply.github.com"
           git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git || true
           git fetch upstream main
           git fetch origin codex/async-dnd-drop-bridge
-          git reset --hard ca54f4bd2eb03b9fc992feee3aff3b9700f73395
+          test "$(git rev-parse upstream/main)" = "$BASE"
+          git reset --hard "$BASE"
+
           set +e
-          git cherry-pick 96bd8910108c99e9e5b394ea158eaf5f4f3059b8
+          git cherry-pick "$PR_HEAD"
           rc=$?
           set -e
-          echo "CHERRY_PICK_RC=$rc"
-          echo "--- status ---"
-          git status --short
-          echo "--- unmerged files ---"
-          git diff --name-only --diff-filter=U
-          echo "--- conflict diff ---"
-          git diff --merge || true
-          exit 1
+          test "$rc" -ne 0
+
+          mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+          printf '%s\n' "${conflicts[@]}"
+          test "${#conflicts[@]}" -eq 2
+          test "${conflicts[0]}" = "src/composables/node/useNodeDragAndDrop.ts"
+          test "${conflicts[1]}" = "src/workbench/extensions/agent/AgentPanelRoot.test.ts"
+
+          cat > src/composables/node/useNodeDragAndDrop.ts <<'EOF'
+          import { useChainCallback } from '@/composables/functional/useChainCallback'
+          import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
+          import { parseAssetInfo } from '@/platform/assets/schemas/mediaAssetSchema'
+          import type { ResultItem } from '@/schemas/apiSchema'
+          import {
+            getFilesFromItems,
+            isSyntheticImageBmpPlaceholder,
+            URI_DROP_TYPES
+          } from '@/utils/eventUtils'
+
+          type DragHandler = (e: DragEvent) => boolean
+          type DropHandler<T> = (files: File[]) => Promise<T[]>
+
+          interface DragAndDropOptions<T> {
+            onDragOver?: DragHandler
+            onDrop: DropHandler<T>
+            onResultItemDrop?: (item: ResultItem) => void
+            fileFilter?: (file: File) => boolean
+          }
+
+          /**
+           * Adds drag and drop file handling to a node
+           * Will also resolve URI drops to a file before passing
+           */
+          export const useNodeDragAndDrop = <T>(
+            node: LGraphNode,
+            options: DragAndDropOptions<T>
+          ) => {
+            const { onDragOver, onDrop, fileFilter = () => true } = options
+
+            const filterFiles = (files: FileList | File[]) =>
+              Array.from(files)
+                .filter((file) => !isSyntheticImageBmpPlaceholder(file))
+                .filter(fileFilter)
+
+            const filterItemFiles = (items: DataTransferItemList) =>
+              filterFiles(getFilesFromItems(items))
+
+            const collectFiles = (e: DragEvent | undefined) => {
+              const dataTransfer = e?.dataTransfer
+              if (!dataTransfer) return []
+
+              const files = filterFiles(dataTransfer.files)
+              return files.length > 0 ? files : filterItemFiles(dataTransfer.items)
+            }
+
+            const hasOpaqueFileItems = (items: DataTransferItemList) =>
+              Array.from(items).some(
+                (item) => item.kind === 'file' && item.getAsFile() === null
+              )
+
+            const getDropUri = (dataTransfer: DataTransfer) => {
+              const uriType = URI_DROP_TYPES.find((type) =>
+                dataTransfer.types.includes(type)
+              )
+              if (!uriType) return ''
+              return dataTransfer.getData(uriType).split('\n').at(0)?.trim() ?? ''
+            }
+
+            const isDraggingFiles = (e: DragEvent | undefined) => {
+              const dataTransfer = e?.dataTransfer
+              if (!dataTransfer) return false
+
+              const customDragOver = onDragOver?.(e)
+              if (customDragOver !== undefined) return customDragOver
+
+              if (collectFiles(e).length > 0) return true
+
+              // Native OS drags may expose only opaque file items during dragover.
+              // Keep hover affordance permissive here; drop remains strictly filtered.
+              // This hover result must never be cached as authorization for the drop.
+              return (
+                hasOpaqueFileItems(dataTransfer.items) ||
+                URI_DROP_TYPES.some((type) => dataTransfer.types.includes(type))
+              )
+            }
+
+            const isDraggingValidFiles = (e: DragEvent | undefined) => {
+              const dataTransfer = e?.dataTransfer
+              if (!dataTransfer) return false
+              return collectFiles(e).length > 0 || !!getDropUri(dataTransfer)
+            }
+
+            const installedDragOver = isDraggingFiles
+            node.onDragOver = installedDragOver
+
+            const installedDragDrop = async function (e: DragEvent) {
+              if (!isDraggingValidFiles(e)) return false
+              const { dataTransfer } = e
+              if (!dataTransfer) return false
+
+              const files = collectFiles(e)
+              if (files.length) {
+                await onDrop(files)
+                return true
+              }
+
+              const asset = parseAssetInfo(dataTransfer)
+              if (asset?.filename && options.onResultItemDrop) {
+                await options.onResultItemDrop(asset)
+                return true
+              }
+
+              const baseUri = getDropUri(dataTransfer)
+              const uri = URL.parse(baseUri, location.href)
+              if (!uri || uri.origin !== location.origin) return false
+
+              try {
+                const resp = await fetch(uri)
+                const fileName =
+                  uri.searchParams.get('filename') ?? baseUri.split('/').at(-1)
+                if (!fileName || !resp.ok) return false
+
+                const blob = await resp.blob()
+                const file = new File([blob], fileName, { type: blob.type })
+                const uriFiles = filterFiles([file])
+                if (!uriFiles.length) return false
+
+                await onDrop(uriFiles)
+              } catch {
+                return false
+              }
+              return true
+            }
+            node.onDragDrop = installedDragDrop
+
+            node.onRemoved = useChainCallback(node.onRemoved, () => {
+              if (node.onDragOver === installedDragOver) node.onDragOver = undefined
+              if (node.onDragDrop === installedDragDrop) node.onDragDrop = undefined
+            })
+          }
+          EOF
+          sed -i 's/^          //' src/composables/node/useNodeDragAndDrop.ts
+
+          git checkout --ours -- src/workbench/extensions/agent/AgentPanelRoot.test.ts
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path('src/workbench/extensions/agent/AgentPanelRoot.test.ts')
+          text = path.read_text()
+
+          old = "import { useAssetsStore } from '@/stores/assetsStore'\nimport { getFilenameDetails } from '@/utils/formatUtil'"
+          new = "import { useAssetsStore } from '@/stores/assetsStore'\nimport { isDropEventHandled } from '@/utils/eventUtils'\nimport { getFilenameDetails } from '@/utils/formatUtil'"
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          old = '''function dispatchDrag(
+            target: Element,
+            type: 'dragenter' | 'dragleave' | 'dragover' | 'drop',
+            data: { files?: File[]; types?: string[]; getData?: (t: string) => string }
+          ): boolean {
+            const event = new Event(type, { bubbles: true, cancelable: true })
+            Object.defineProperty(event, 'dataTransfer', {
+              value: {
+                files: data.files ?? [],
+                types: data.types ?? ['Files'],
+                getData: data.getData ?? (() => '')
+              }
+            })
+            target.dispatchEvent(event)
+            return event.defaultPrevented
+          }'''
+          new = '''function dispatchDragEvent(
+            target: Element,
+            type: 'dragenter' | 'dragleave' | 'dragover' | 'drop',
+            data: { files?: File[]; types?: string[]; getData?: (t: string) => string }
+          ): DragEvent {
+            const event = new Event(type, { bubbles: true, cancelable: true })
+            Object.defineProperty(event, 'dataTransfer', {
+              value: {
+                files: data.files ?? [],
+                types: data.types ?? ['Files'],
+                getData: data.getData ?? (() => '')
+              }
+            })
+            target.dispatchEvent(event)
+            return event as DragEvent
+          }
+
+          function dispatchDrag(
+            target: Element,
+            type: 'dragenter' | 'dragleave' | 'dragover' | 'drop',
+            data: { files?: File[]; types?: string[]; getData?: (t: string) => string }
+          ): boolean {
+            return dispatchDragEvent(target, type, data).defaultPrevented
+          }'''
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          old = "      expect(dispatchDrag(target, 'drop', dragData)).toBe(true)\n      expect(dispatchDrag(target, 'drop', dragData)).toBe(true)"
+          new = "      const firstDrop = dispatchDragEvent(target, 'drop', dragData)\n      expect(firstDrop.defaultPrevented).toBe(true)\n      expect(isDropEventHandled(firstDrop)).toBe(true)\n      expect(dispatchDrag(target, 'drop', dragData)).toBe(true)"
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          old = "    const asset = new File(['x'], 'cat.png', { type: 'image/png' })\n    expect(dispatchDrag(target, 'drop', { files: [asset] })).toBe(true)\n    expect(await screen.findByText('cat.png')).toBeInTheDocument()"
+          new = "    const asset = new File(['x'], 'cat.png', { type: 'image/png' })\n    const assetDrop = dispatchDragEvent(target, 'drop', { files: [asset] })\n    expect(assetDrop.defaultPrevented).toBe(true)\n    expect(isDropEventHandled(assetDrop)).toBe(true)\n    expect(await screen.findByText('cat.png')).toBeInTheDocument()"
+          assert old in text
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          git add src/composables/node/useNodeDragAndDrop.ts src/workbench/extensions/agent/AgentPanelRoot.test.ts
+          GIT_EDITOR=true git cherry-pick --continue
+
+          test "$(git rev-list --count "$BASE"..HEAD)" -eq 1
+          git diff --check "$BASE"..HEAD
+
+          cat > /tmp/expected-files <<'EOF'
+          src/composables/node/useNodeDragAndDrop.test.ts
+          src/composables/node/useNodeDragAndDrop.ts
+          src/composables/usePaste.test.ts
+          src/composables/usePaste.ts
+          src/renderer/extensions/vueNodes/components/LGraphNode.test.ts
+          src/renderer/extensions/vueNodes/components/LGraphNode.vue
+          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts
+          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts
+          src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts
+          src/scripts/app.test.ts
+          src/scripts/app.ts
+          src/utils/__tests__/eventUtils.test.ts
+          src/utils/eventUtils.ts
+          src/utils/mediaUploadUtil.ts
+          src/workbench/extensions/agent/AgentPanelRoot.test.ts
+          src/workbench/extensions/agent/AgentPanelRoot.vue
+          EOF
+          sed -i 's/^          //' /tmp/expected-files
+          git diff --name-only "$BASE"..HEAD | sort > /tmp/actual-files
+          sort /tmp/expected-files -o /tmp/expected-files
+          diff -u /tmp/expected-files /tmp/actual-files
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate focused behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec vitest run \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/usePaste.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/scripts/app.test.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts
+
+      - name: Validate static analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm typecheck
+          pnpm oxlint
+          git diff --name-only ca54f4bd2eb03b9fc992feee3aff3b9700f73395..HEAD \
+            | grep -E '\.(js|ts|vue|mts)$' \
+            | xargs pnpm exec eslint --no-cache
+          pnpm knip:no-cache
+          pnpm format:check
+
+      - name: Publish validated mirror candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:refs/heads/mirror/pr-10841-20260905-candidate --force
+          echo "candidate=$(git rev-parse HEAD)"
