@@ -124,6 +124,13 @@ jobs:
               '    if (!getIndexEntry(index, key) || seen.has(key)) continue',
               migration,
           )
+          text = replace_exact_count(
+              text,
+              '    const currentEntry = baseIndex.entries[draftKey]',
+              '    const currentEntry = getIndexEntry(baseIndex, draftKey)',
+              2,
+              migration,
+          )
           p.write_text(text)
 
           store = 'src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts'
