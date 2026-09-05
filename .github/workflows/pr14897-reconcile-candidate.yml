@@ -60,13 +60,19 @@ jobs:
                   raise RuntimeError(f'{path}: expected one occurrence of {old!r}, got {count}')
               return text.replace(old, new, 1)
 
+          def replace_exact_count(text: str, old: str, new: str, count: int, path: str) -> str:
+              actual = text.count(old)
+              if actual != count:
+                  raise RuntimeError(f'{path}: expected {count} occurrences of {old!r}, got {actual}')
+              return text.replace(old, new)
+
           storage = 'src/platform/workflow/persistence/base/storageIO.ts'
           replace_conflict(
               storage,
               """      targetWorkspaceId,\n      isValidOpenPathsPointer\n    ) ??\n    (targetWorkspaceId ? readPersistentOpenPaths(targetWorkspaceId) : null)\n""",
           )
-          storage_path = Path(storage)
-          text = storage_path.read_text()
+          p = Path(storage)
+          text = p.read_text()
           text = replace_once(
               text,
               'function isValidIndex(value: unknown): value is DraftIndexV2 {',
@@ -85,24 +91,128 @@ jobs:
               '  const order = index.order.filter((draftKey): draftKey is string => {',
               storage,
           )
-          storage_path.write_text(text)
+          p.write_text(text)
 
           migration = 'src/platform/workflow/persistence/migration/migrateV1toV2.ts'
           replace_conflict(
               migration,
               """  const draftsByPath: Partial<Record<string, V1DraftSnapshot>> = legacy.drafts\n  for (const path of legacy.order) {\n    const draft = draftsByPath[path]\n    if (!draft) continue\n\n    const draftKey = hashPath(path)\n    const previous = legacyByKey.get(draftKey)\n    if (previous && previous.path !== path) {\n      hasHashCollision = true\n      console.warn(\n        `[V2 Migration] Draft-key collision between ${previous.path} and ${path}`\n      )\n      continue\n    }\n    legacyByKey.set(draftKey, { path, draft })\n  }\n""",
           )
+          p = Path(migration)
+          text = p.read_text()
+          text = replace_once(
+              text,
+              'function mergedV1Data(sources: V1StorageSource[]): {',
+              """function getV1Draft(\n  drafts: Record<string, V1DraftSnapshot>,\n  path: string\n): V1DraftSnapshot | undefined {\n  return drafts[path]\n}\n\nfunction getIndexEntry(\n  index: DraftIndexV2,\n  key: string\n): DraftIndexV2['entries'][string] | undefined {\n  return index.entries[key]\n}\n\nfunction mergedV1Data(sources: V1StorageSource[]): {""",
+              migration,
+          )
+          text = replace_once(
+              text,
+              '      if (!source.drafts[path] || inOrder.has(path)) continue',
+              """      const draft = getV1Draft(source.drafts, path)\n      if (!draft || inOrder.has(path)) continue""",
+              migration,
+          )
+          text = replace_once(
+              text,
+              """      const candidate = source.drafts[path]\n      const previous = drafts[path]\n      if (!previous || candidate.updatedAt >= previous.updatedAt) {\n        drafts[path] = candidate\n      }""",
+              """      const candidate = getV1Draft(source.drafts, path)\n      if (!candidate) continue\n      const previous = getV1Draft(drafts, path)\n      if (!previous || candidate.updatedAt >= previous.updatedAt) {\n        drafts[path] = candidate\n      }""",
+              migration,
+          )
+          text = replace_once(
+              text,
+              '    if (!index.entries[key] || seen.has(key)) continue',
+              '    if (!getIndexEntry(index, key) || seen.has(key)) continue',
+              migration,
+          )
+          p.write_text(text)
 
           store = 'src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts'
           p, lines, start, _base_sep, theirs_sep, end = split_conflict(store)
-          theirs = lines[theirs_sep + 1:end]
-          lines[start:end + 1] = theirs
+          lines[start:end + 1] = lines[theirs_sep + 1:end]
           text = ''.join(lines)
           text = replace_once(
               text,
               '        const oldestEntry = currentIndex.entries[oldestKey]\n        const result = oldestEntry\n',
               '        const oldestEntry = getIndexEntry(currentIndex, oldestKey)\n        const result = oldestEntry\n',
               store,
+          )
+          text = replace_once(
+              text,
+              '    const existingEntry = index.entries[draftKey]',
+              '    const existingEntry = getIndexEntry(index, draftKey)',
+              store,
+          )
+          p.write_text(text)
+
+          composable = 'src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.ts'
+          p = Path(composable)
+          text = p.read_text()
+          text = replace_once(text, '      comfyApp.canvas?.ds,', '      comfyApp.canvas.ds,', composable)
+          text = replace_once(
+              text,
+              '    const savedViewState = activeWorkflow.initialState?.extra?.ds',
+              '    const savedViewState = activeWorkflow.initialState.extra?.ds',
+              composable,
+          )
+          p.write_text(text)
+
+          view_test = 'src/platform/workflow/persistence/base/workflowViewState.test.ts'
+          p = Path(view_test)
+          text = p.read_text()
+          text = replace_once(
+              text,
+              "import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'\n",
+              '',
+              view_test,
+          )
+          text = replace_exact_count(
+              text,
+              'structuredClone(defaultGraph) as ComfyWorkflowJSON',
+              'structuredClone(defaultGraph)',
+              2,
+              view_test,
+          )
+          p.write_text(text)
+
+          reconciliation_test = 'src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.reconciliation.test.ts'
+          p = Path(reconciliation_test)
+          text = p.read_text()
+          text = replace_once(
+              text,
+              """const teamWorkspaceStoreMocks = reactive({\n  initState: 'uninitialized' as 'uninitialized' | 'ready' | 'error',\n  activeWorkspaceId: null as string | null\n})""",
+              """const teamWorkspaceStoreMocks = reactive<{\n  initState: 'uninitialized' | 'ready' | 'error'\n  activeWorkspaceId: string | null\n}>({\n  initState: 'uninitialized',\n  activeWorkspaceId: null\n})""",
+              reconciliation_test,
+          )
+          p.write_text(text)
+
+          quota_test = 'src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts'
+          p = Path(quota_test)
+          text = p.read_text()
+          text = replace_once(
+              text,
+              '        entries?: Record<string, unknown>',
+              '        entries: Partial<Record<string, unknown>>',
+              quota_test,
+          )
+          text = replace_exact_count(text, 'index.entries?.[', 'index.entries[', 3, quota_test)
+          p.write_text(text)
+
+          rollback_test = 'src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts'
+          p = Path(rollback_test)
+          text = p.read_text()
+          text = replace_exact_count(
+              text,
+              'entries?: Record<string, { name?: string }>',
+              'entries?: Partial<Record<string, { name?: string }>>',
+              4,
+              rollback_test,
+          )
+          text = replace_exact_count(
+              text,
+              'index.entries?.[evictedDraftKey]',
+              'index.entries[evictedDraftKey]',
+              4,
+              rollback_test,
           )
           p.write_text(text)
           PY
@@ -111,10 +221,7 @@ jobs:
             src/platform/workflow/persistence/base/storageIO.ts \
             src/platform/workflow/persistence/migration/migrateV1toV2.ts \
             src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts
-          git add \
-            src/platform/workflow/persistence/base/storageIO.ts \
-            src/platform/workflow/persistence/migration/migrateV1toV2.ts \
-            src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts
+          git add -A
           test -z "$(git diff --name-only --diff-filter=U)"
           git diff --check --cached
           GIT_EDITOR=true git cherry-pick --continue
@@ -148,27 +255,21 @@ jobs:
           src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts
           EOF
           sed -i 's/^          //' /tmp/expected-files
-          git diff --name-only "$BASE"..HEAD | sort > /tmp/actual-files
           sort -o /tmp/expected-files /tmp/expected-files
+          git diff --name-only "$BASE"..HEAD | sort > /tmp/actual-files
           diff -u /tmp/expected-files /tmp/actual-files
-
-          echo '=== CANDIDATE CHANGED FILES ==='
-          git diff --name-status "$BASE"..HEAD
-          echo '=== CANDIDATE COMMIT ==='
-          git show --stat --oneline --decorate --summary HEAD
+          git show --stat --oneline --summary HEAD
 
       - name: Setup frontend
         uses: ./.github/actions/setup-frontend
 
-      - name: Format reconciled files and fold any formatter delta into the single commit
+      - name: Format reconciled files and fold formatter delta into the single commit
         shell: bash
         run: |
           set -euo pipefail
           BASE=ca54f4bd2eb03b9fc992feee3aff3b9700f73395
           mapfile -t files < <(git diff --name-only "$BASE"..HEAD -- '*.ts' '*.vue' '*.mts' '*.js')
-          if ((${#files[@]})); then
-            pnpm exec oxfmt --write "${files[@]}"
-          fi
+          pnpm exec oxfmt --write "${files[@]}"
           if ! git diff --quiet; then
             git diff --check
             git add "${files[@]}"
@@ -198,37 +299,8 @@ jobs:
           test "$(git rev-list --count "$BASE"..HEAD)" = 1
           test "$(git status --porcelain)" = ''
           git diff --check "$BASE"..HEAD
-
-          cat > /tmp/expected-files <<'EOF'
-          browser_tests/tests/workflowPersistenceRecovery.spec.ts
-          src/platform/workflow/core/services/workflowService.persistence.test.ts
-          src/platform/workflow/core/services/workflowService.test.ts
-          src/platform/workflow/core/services/workflowService.ts
-          src/platform/workflow/management/stores/comfyWorkflow.ts
-          src/platform/workflow/management/stores/workflowStore.persistence.test.ts
-          src/platform/workflow/persistence/base/draftTypes.ts
-          src/platform/workflow/persistence/base/storageIO.test.ts
-          src/platform/workflow/persistence/base/storageIO.ts
-          src/platform/workflow/persistence/base/workflowViewState.test.ts
-          src/platform/workflow/persistence/base/workflowViewState.ts
-          src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.reconciliation.test.ts
-          src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.ts
-          src/platform/workflow/persistence/migration/migrateV1toV2.collision.test.ts
-          src/platform/workflow/persistence/migration/migrateV1toV2.malformedPayload.test.ts
-          src/platform/workflow/persistence/migration/migrateV1toV2.recovery.test.ts
-          src/platform/workflow/persistence/migration/migrateV1toV2.test.ts
-          src/platform/workflow/persistence/migration/migrateV1toV2.ts
-          src/platform/workflow/persistence/stores/workflowDraftStoreV2.persistenceControl.test.ts
-          src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts
-          src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts
-          src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts
-          src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts
-          EOF
-          sed -i 's/^          //' /tmp/expected-files
           git diff --name-only "$BASE"..HEAD | sort > /tmp/actual-files
-          sort -o /tmp/expected-files /tmp/expected-files
           diff -u /tmp/expected-files /tmp/actual-files
-
           echo '=== FINAL COMMIT ==='
           git log -1 --format=fuller
           echo '=== FINAL CHANGED FILE COUNT ==='
