@@ -78,20 +78,51 @@ jobs:
           p.write_text(text.replace(old, new, 1))
           PY
 
-          test -z "$(git diff --name-only --diff-filter=U)"
           ! grep -R -n -E '^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)' \
             src/platform/workflow/persistence/base/storageIO.ts \
             src/platform/workflow/persistence/migration/migrateV1toV2.ts \
             src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts
-          git diff --check
           git add \
             src/platform/workflow/persistence/base/storageIO.ts \
             src/platform/workflow/persistence/migration/migrateV1toV2.ts \
             src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git diff --check --cached
           GIT_EDITOR=true git cherry-pick --continue
 
           test "$(git rev-parse HEAD^)" = "$BASE"
           test "$(git rev-list --count "$BASE"..HEAD)" = 1
+
+          cat > /tmp/expected-files <<'EOF'
+          browser_tests/tests/workflowPersistenceRecovery.spec.ts
+          src/platform/workflow/core/services/workflowService.persistence.test.ts
+          src/platform/workflow/core/services/workflowService.test.ts
+          src/platform/workflow/core/services/workflowService.ts
+          src/platform/workflow/management/stores/comfyWorkflow.ts
+          src/platform/workflow/management/stores/workflowStore.persistence.test.ts
+          src/platform/workflow/persistence/base/draftTypes.ts
+          src/platform/workflow/persistence/base/storageIO.test.ts
+          src/platform/workflow/persistence/base/storageIO.ts
+          src/platform/workflow/persistence/base/workflowViewState.test.ts
+          src/platform/workflow/persistence/base/workflowViewState.ts
+          src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.reconciliation.test.ts
+          src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.ts
+          src/platform/workflow/persistence/migration/migrateV1toV2.collision.test.ts
+          src/platform/workflow/persistence/migration/migrateV1toV2.malformedPayload.test.ts
+          src/platform/workflow/persistence/migration/migrateV1toV2.recovery.test.ts
+          src/platform/workflow/persistence/migration/migrateV1toV2.test.ts
+          src/platform/workflow/persistence/migration/migrateV1toV2.ts
+          src/platform/workflow/persistence/stores/workflowDraftStoreV2.persistenceControl.test.ts
+          src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts
+          src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts
+          src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts
+          src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts
+          EOF
+          sed -i 's/^          //' /tmp/expected-files
+          git diff --name-only "$BASE"..HEAD | sort > /tmp/actual-files
+          sort -o /tmp/expected-files /tmp/expected-files
+          diff -u /tmp/expected-files /tmp/actual-files
+
           echo '=== CANDIDATE CHANGED FILES ==='
           git diff --name-status "$BASE"..HEAD
           echo '=== CANDIDATE COMMIT ==='
@@ -111,7 +142,7 @@ jobs:
           fi
           if ! git diff --quiet; then
             git diff --check
-            git add -A
+            git add "${files[@]}"
             git commit --amend --no-edit
           fi
           test "$(git rev-parse HEAD^)" = "$BASE"
@@ -138,6 +169,37 @@ jobs:
           test "$(git rev-list --count "$BASE"..HEAD)" = 1
           test "$(git status --porcelain)" = ''
           git diff --check "$BASE"..HEAD
+
+          cat > /tmp/expected-files <<'EOF'
+          browser_tests/tests/workflowPersistenceRecovery.spec.ts
+          src/platform/workflow/core/services/workflowService.persistence.test.ts
+          src/platform/workflow/core/services/workflowService.test.ts
+          src/platform/workflow/core/services/workflowService.ts
+          src/platform/workflow/management/stores/comfyWorkflow.ts
+          src/platform/workflow/management/stores/workflowStore.persistence.test.ts
+          src/platform/workflow/persistence/base/draftTypes.ts
+          src/platform/workflow/persistence/base/storageIO.test.ts
+          src/platform/workflow/persistence/base/storageIO.ts
+          src/platform/workflow/persistence/base/workflowViewState.test.ts
+          src/platform/workflow/persistence/base/workflowViewState.ts
+          src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.reconciliation.test.ts
+          src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.ts
+          src/platform/workflow/persistence/migration/migrateV1toV2.collision.test.ts
+          src/platform/workflow/persistence/migration/migrateV1toV2.malformedPayload.test.ts
+          src/platform/workflow/persistence/migration/migrateV1toV2.recovery.test.ts
+          src/platform/workflow/persistence/migration/migrateV1toV2.test.ts
+          src/platform/workflow/persistence/migration/migrateV1toV2.ts
+          src/platform/workflow/persistence/stores/workflowDraftStoreV2.persistenceControl.test.ts
+          src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts
+          src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts
+          src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts
+          src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts
+          EOF
+          sed -i 's/^          //' /tmp/expected-files
+          git diff --name-only "$BASE"..HEAD | sort > /tmp/actual-files
+          sort -o /tmp/expected-files /tmp/expected-files
+          diff -u /tmp/expected-files /tmp/actual-files
+
           echo '=== FINAL COMMIT ==='
           git log -1 --format=fuller
           echo '=== FINAL CHANGED FILE COUNT ==='
