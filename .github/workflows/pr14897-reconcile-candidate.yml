@@ -96,7 +96,7 @@ jobs:
           migration = 'src/platform/workflow/persistence/migration/migrateV1toV2.ts'
           replace_conflict(
               migration,
-              """  const draftsByPath: Partial<Record<string, V1DraftSnapshot>> = legacy.drafts\n  for (const path of legacy.order) {\n    const draft = draftsByPath[path]\n    if (!draft) continue\n\n    const draftKey = hashPath(path)\n    const previous = legacyByKey.get(draftKey)\n    if (previous && previous.path !== path) {\n      hasHashCollision = true\n      console.warn(\n        `[V2 Migration] Draft-key collision between ${previous.path} and ${path}`\n      )\n      continue\n    }\n    legacyByKey.set(draftKey, { path, draft })\n  }\n""",
+              """  const legacy = mergedV1Data(sources)\n  const baseIndex = originalIndex ?? createEmptyIndex()\n  const legacyByKey = new Map<\n    string,\n    { path: string; draft: V1DraftSnapshot }\n  >()\n  let hasHashCollision = false\n\n  const draftsByPath: Partial<Record<string, V1DraftSnapshot>> = legacy.drafts\n  for (const path of legacy.order) {\n    const draft = draftsByPath[path]\n    if (!draft) continue\n\n    const draftKey = hashPath(path)\n    const previous = legacyByKey.get(draftKey)\n    if (previous && previous.path !== path) {\n      hasHashCollision = true\n      console.warn(\n        `[V2 Migration] Draft-key collision between ${previous.path} and ${path}`\n      )\n      continue\n    }\n    legacyByKey.set(draftKey, { path, draft })\n  }\n""",
           )
           p = Path(migration)
           text = p.read_text()
