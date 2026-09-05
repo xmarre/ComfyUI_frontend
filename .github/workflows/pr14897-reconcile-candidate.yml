@@ -188,13 +188,14 @@ jobs:
           quota_test = 'src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts'
           p = Path(quota_test)
           text = p.read_text()
-          text = replace_once(
+          text = replace_exact_count(
               text,
-              '        entries?: Record<string, unknown>',
-              '        entries: Partial<Record<string, unknown>>',
+              'entries?: Record<string, unknown>',
+              'entries: Partial<Record<string, unknown>>',
+              2,
               quota_test,
           )
-          text = replace_exact_count(text, 'index.entries?.[', 'index.entries[', 3, quota_test)
+          text = replace_exact_count(text, 'index.entries?.[', 'index.entries[', 4, quota_test)
           p.write_text(text)
 
           rollback_test = 'src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts'
