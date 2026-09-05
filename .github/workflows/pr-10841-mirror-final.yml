@@ -1,0 +1,100 @@
+name: PR 10841 mirror final validation
+
+on:
+  push:
+    branches:
+      - mirror/pr-10841-20260905-work
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct reconciled candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/pr-10841-mirror-reconcile.yml')
+          lines = path.read_text().splitlines()
+          marker = '      - name: Reconcile onto current upstream main'
+          start = lines.index(marker)
+          run_line = next(i for i in range(start + 1, len(lines)) if lines[i] == '        run: |')
+          end = next(i for i in range(run_line + 1, len(lines)) if lines[i].startswith('      - '))
+          body = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines[run_line + 1:end]) + '\n'
+          Path('/tmp/pr10841-reconcile.sh').write_text(body)
+          PY
+          bash /tmp/pr10841-reconcile.sh
+
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path('src/composables/usePaste.ts')
+          text = path.read_text()
+          old = '  const blob = filteredFiles[0]\n  if (!blob) return'
+          new = '  const blob = filteredFiles.at(0)\n  if (!blob) return'
+          assert text.count(old) == 1
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git add src/composables/usePaste.ts
+          git commit --amend --no-edit
+
+          BASE=ca54f4bd2eb03b9fc992feee3aff3b9700f73395
+          test "$(git rev-list --count "$BASE"..HEAD)" -eq 1
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          git diff --check "$BASE"..HEAD
+          test "$(git diff --name-only "$BASE"..HEAD | wc -l)" -eq 16
+          test "$(git diff --name-only "$BASE"..HEAD | grep -c '^src/')" -eq 16
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate focused behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec vitest run \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/usePaste.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/scripts/app.test.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts
+
+      - name: Validate static analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm typecheck
+          pnpm oxlint
+          git diff --name-only ca54f4bd2eb03b9fc992feee3aff3b9700f73395..HEAD \
+            | grep -E '\.(js|ts|vue|mts)$' \
+            | xargs pnpm exec eslint --no-cache
+          pnpm knip:no-cache
+          pnpm format:check
+
+      - name: Publish validated mirror candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:refs/heads/mirror/pr-10841-20260905-candidate --force
+          echo "candidate=$(git rev-parse HEAD)"
