@@ -1,0 +1,145 @@
+name: PR 14897 candidate reconciliation
+
+on:
+  push:
+    branches:
+      - mirror/pr-14897-20260905-work
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Build one-commit candidate from current upstream base
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=ca54f4bd2eb03b9fc992feee3aff3b9700f73395
+          OLD_HEAD=82e5fa6b9d5e258d5722a33e0d4ac4198d782a09
+          git config user.name 'xmarre'
+          git config user.email '54859656+xmarre@users.noreply.github.com'
+          git config merge.conflictStyle diff3
+          git reset --hard "$BASE"
+          git fetch origin fix/workflow-draft-quota-recovery
+
+          set +e
+          git cherry-pick "$OLD_HEAD"
+          status=$?
+          set -e
+          test "$status" -ne 0
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          def split_conflict(path: str):
+              p = Path(path)
+              lines = p.read_text().splitlines(keepends=True)
+              starts = [i for i, line in enumerate(lines) if line.startswith('<<<<<<< ')]
+              if len(starts) != 1:
+                  raise RuntimeError(f'{path}: expected exactly one conflict, got {len(starts)}')
+              start = starts[0]
+              base_sep = next(i for i in range(start + 1, len(lines)) if lines[i].startswith('||||||| '))
+              theirs_sep = next(i for i in range(base_sep + 1, len(lines)) if lines[i].startswith('======='))
+              end = next(i for i in range(theirs_sep + 1, len(lines)) if lines[i].startswith('>>>>>>> '))
+              return p, lines, start, base_sep, theirs_sep, end
+
+          def replace_conflict(path: str, replacement: str):
+              p, lines, start, _base_sep, _theirs_sep, end = split_conflict(path)
+              lines[start:end + 1] = replacement.splitlines(keepends=True)
+              p.write_text(''.join(lines))
+
+          storage = 'src/platform/workflow/persistence/base/storageIO.ts'
+          replace_conflict(
+              storage,
+              """      targetWorkspaceId,\n      isValidOpenPathsPointer\n    ) ??\n    (targetWorkspaceId ? readPersistentOpenPaths(targetWorkspaceId) : null)\n""",
+          )
+
+          migration = 'src/platform/workflow/persistence/migration/migrateV1toV2.ts'
+          replace_conflict(
+              migration,
+              """  const draftsByPath: Partial<Record<string, V1DraftSnapshot>> = legacy.drafts\n  for (const path of legacy.order) {\n    const draft = draftsByPath[path]\n    if (!draft) continue\n\n    const draftKey = hashPath(path)\n    const previous = legacyByKey.get(draftKey)\n    if (previous && previous.path !== path) {\n      hasHashCollision = true\n      console.warn(\n        `[V2 Migration] Draft-key collision between ${previous.path} and ${path}`\n      )\n      continue\n    }\n    legacyByKey.set(draftKey, { path, draft })\n  }\n""",
+          )
+
+          store = 'src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts'
+          p, lines, start, _base_sep, theirs_sep, end = split_conflict(store)
+          theirs = lines[theirs_sep + 1:end]
+          lines[start:end + 1] = theirs
+          text = ''.join(lines)
+          old = '        const oldestEntry = currentIndex.entries[oldestKey]\n        const result = oldestEntry\n'
+          new = '        const oldestEntry = getIndexEntry(currentIndex, oldestKey)\n        const result = oldestEntry\n'
+          if text.count(old) != 1:
+              raise RuntimeError(f'{store}: expected one direct oldest-entry lookup, got {text.count(old)}')
+          p.write_text(text.replace(old, new, 1))
+          PY
+
+          test -z "$(git diff --name-only --diff-filter=U)"
+          ! grep -R -n -E '^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)' \
+            src/platform/workflow/persistence/base/storageIO.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts
+          git diff --check
+          git add \
+            src/platform/workflow/persistence/base/storageIO.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts
+          GIT_EDITOR=true git cherry-pick --continue
+
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          test "$(git rev-list --count "$BASE"..HEAD)" = 1
+          echo '=== CANDIDATE CHANGED FILES ==='
+          git diff --name-status "$BASE"..HEAD
+          echo '=== CANDIDATE COMMIT ==='
+          git show --stat --oneline --decorate --summary HEAD
+
+      - name: Setup frontend
+        uses: ./.github/actions/setup-frontend
+
+      - name: Format reconciled files and fold any formatter delta into the single commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=ca54f4bd2eb03b9fc992feee3aff3b9700f73395
+          mapfile -t files < <(git diff --name-only "$BASE"..HEAD -- '*.ts' '*.vue' '*.mts' '*.js')
+          if ((${#files[@]})); then
+            pnpm exec oxfmt --write "${files[@]}"
+          fi
+          if ! git diff --quiet; then
+            git diff --check
+            git add -A
+            git commit --amend --no-edit
+          fi
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          test "$(git rev-list --count "$BASE"..HEAD)" = 1
+
+      - name: Type-aware Oxlint
+        run: pnpm oxlint:main
+
+      - name: Frontend typecheck
+        run: pnpm typecheck
+
+      - name: Browser test typecheck
+        run: pnpm typecheck:browser
+
+      - name: Workflow unit tests
+        run: pnpm exec vitest run src/platform/workflow
+
+      - name: Verify final topology and push mirror candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=ca54f4bd2eb03b9fc992feee3aff3b9700f73395
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          test "$(git rev-list --count "$BASE"..HEAD)" = 1
+          test "$(git status --porcelain)" = ''
+          git diff --check "$BASE"..HEAD
+          echo '=== FINAL COMMIT ==='
+          git log -1 --format=fuller
+          echo '=== FINAL CHANGED FILE COUNT ==='
+          git diff --name-only "$BASE"..HEAD | wc -l
+          git push --force-with-lease origin HEAD:refs/heads/mirror/pr-14897-20260905-candidate
