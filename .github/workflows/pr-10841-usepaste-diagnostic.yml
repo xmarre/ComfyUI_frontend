@@ -1,0 +1,35 @@
+name: PR 10841 usePaste diagnostic
+
+on:
+  push:
+    branches:
+      - mirror/pr-10841-20260905-work
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconstruct auto-merged usePaste source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name diagnostic
+          git config user.email diagnostic@example.invalid
+          git reset --hard ca54f4bd2eb03b9fc992feee3aff3b9700f73395
+          set +e
+          git cherry-pick 96bd8910108c99e9e5b394ea158eaf5f4f3059b8
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          git checkout --theirs -- src/composables/node/useNodeDragAndDrop.ts
+          git checkout --ours -- src/workbench/extensions/agent/AgentPanelRoot.test.ts
+          git add src/composables/node/useNodeDragAndDrop.ts src/workbench/extensions/agent/AgentPanelRoot.test.ts
+          GIT_EDITOR=true git cherry-pick --continue
+          echo '--- usePaste 90-110 ---'
+          nl -ba src/composables/usePaste.ts | sed -n '90,110p'
