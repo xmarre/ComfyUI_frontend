@@ -18,7 +18,7 @@ jobs:
           ref: mirror/pr10841-reconcile-candidate-20260910
           fetch-depth: 0
 
-      - name: Configure and verify reconciliation base
+      - name: Configure and verify base
         shell: bash
         run: |
           set -euo pipefail
@@ -26,13 +26,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
           git fetch --no-tags upstream main
-          git fetch --no-tags origin codex/async-dnd-drop-bridge
-
-          expected_head=3cca1046af160aeb19634f0c57a274df5a436a33
-          expected_upstream=7e678911d2725e16ebda7b70d460af5a3522f1e1
-          test "$(git rev-parse HEAD)" = "$expected_head"
-          test "$(git rev-parse upstream/main)" = "$expected_upstream"
-          test "$(git rev-parse HEAD^)" = "$expected_upstream"
+          test "$(git rev-parse HEAD)" = eb0664465e67c513e166610d94f7701dbec76931
+          test "$(git rev-parse upstream/main)" = 7e678911d2725e16ebda7b70d460af5a3522f1e1
+          test "$(git rev-parse HEAD~2)" = 7e678911d2725e16ebda7b70d460af5a3522f1e1
 
       - name: Apply clean overlap files
         shell: bash
@@ -40,308 +36,14 @@ jobs:
           set -euo pipefail
           old_base=ca54f4bd2eb03b9fc992feee3aff3b9700f73395
           old_head=a8d7c7c823efbe6126bcd404f7fc97fcfeb2d37b
-          files=(
-            src/scripts/app.test.ts
-            src/scripts/app.ts
-            src/workbench/extensions/agent/AgentPanelRoot.test.ts
-            src/workbench/extensions/agent/AgentPanelRoot.vue
-          )
-          git diff --binary "$old_base" "$old_head" -- "${files[@]}" > /tmp/pr10841-clean-overlap.patch
+          git diff --binary "$old_base" "$old_head" -- \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.vue \
+            > /tmp/pr10841-clean-overlap.patch
           git apply --3way --index /tmp/pr10841-clean-overlap.patch
-
-      - name: Reconcile current test infrastructure with PR regressions
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 <<'PY'
-          from pathlib import Path
-
-          def replace_once(text: str, old: str, new: str, label: str) -> str:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{label}: expected exactly one anchor, found {count}")
-              return text.replace(old, new, 1)
-
-          # usePaste.test.ts: retain upstream's real Pinia + effectScope lifecycle.
-          # The old PR's manual @vueuse listener mock is intentionally not carried
-          # forward because scope.stop() now owns listener disposal.
-          path = Path('src/composables/usePaste.test.ts')
-          text = path.read_text()
-
-          anchor = """  })\n})\n\ndescribe('pasteImageNodes', () => {"""
-          addition = """  })\n\n  it('should accept image files with empty MIME type when extension is recognized', async () => {\n    const mockNode = createMockNode()\n    const imageFile = createImageFile('test.jpg', '')\n    const dataTransfer = createDataTransfer([imageFile])\n\n    await pasteImageNode(mockCanvas, dataTransfer.items, mockNode)\n\n    expect(mockNode.pasteFile).toHaveBeenCalledWith(imageFile)\n    expect(mockNode.pasteFiles).toHaveBeenCalledWith([imageFile])\n  })\n})\n\ndescribe('pasteImageNodes', () => {"""
-          text = replace_once(text, anchor, addition, 'usePaste empty-MIME unit insertion')
-
-          anchor = """    vi.mocked(mockCanvas.graph!.add).mockImplementation(\n      (node: LGraphNode | LGraphGroup | null) => node as LGraphNode\n    )\n  })\n\n  it('should handle image paste', async () => {"""
-          addition = """    vi.mocked(mockCanvas.graph!.add).mockImplementation(\n      (node: LGraphNode | LGraphGroup | null) => node as LGraphNode\n    )\n  })\n\n  it('should ignore paste events without clipboard data', async () => {\n    usePaste()\n\n    document.dispatchEvent(new ClipboardEvent('paste'))\n\n    await Promise.resolve()\n    expect(createNode).not.toHaveBeenCalled()\n    expect(app.loadGraphData).not.toHaveBeenCalled()\n    expect(mockCanvas.pasteFromClipboard).not.toHaveBeenCalled()\n  })\n\n  it('should ignore synthetic BMP placeholders and continue with workflow text paste', async () => {\n    usePaste()\n\n    const placeholder = new File([], 'placeholder.bmp', { type: 'image/bmp' })\n    const dataTransfer = createDataTransfer([placeholder])\n    const workflow = {\n      version: 0.4,\n      nodes: [],\n      links: [],\n      groups: [],\n      config: {},\n      extra: {}\n    }\n    dataTransfer.setData('text/plain', JSON.stringify(workflow))\n\n    document.dispatchEvent(\n      new ClipboardEvent('paste', { clipboardData: dataTransfer })\n    )\n\n    await vi.waitFor(() => {\n      expect(app.loadGraphData).toHaveBeenCalledWith(workflow)\n    })\n    expect(createNode).not.toHaveBeenCalled()\n  })\n\n  it('should handle image paste', async () => {"""
-          text = replace_once(text, anchor, addition, 'usePaste document regression insertion')
-
-          anchor = """  it('should handle audio paste using createNode helper', async () => {"""
-          addition = """  it('should handle image paste with empty MIME type by extension', async () => {\n    const mockNode = createMockNode()\n    vi.mocked(createNode).mockResolvedValue(mockNode)\n\n    usePaste()\n\n    const file = createImageFile('test.jpg', '')\n    const dataTransfer = createDataTransfer([file])\n    const event = new ClipboardEvent('paste', { clipboardData: dataTransfer })\n    document.dispatchEvent(event)\n\n    await vi.waitFor(() => {\n      expect(createNode).toHaveBeenCalledWith(mockCanvas, 'LoadImage')\n      expect(mockNode.pasteFile).toHaveBeenCalledWith(file)\n    })\n  })\n\n  it('should handle audio paste using createNode helper', async () => {"""
-          text = replace_once(text, anchor, addition, 'usePaste empty-MIME integration insertion')
-
-          anchor = """  it('should call canvas pasteFromClipboard for non-workflow text', () => {"""
-          addition = """  it('should prefer the selected image node when mixed media is pasted', async () => {\n    const mockNode = createMockLGraphNode({\n      is_selected: true,\n      pasteFile: vi.fn(),\n      pasteFiles: vi.fn()\n    })\n    mockCanvas.current_node = mockNode\n    mockNode.previewMediaType = 'image'\n\n    usePaste()\n\n    const audioFile = createAudioFile()\n    const imageFile = createImageFile()\n    const dataTransfer = createDataTransfer([audioFile, imageFile])\n    const event = new ClipboardEvent('paste', { clipboardData: dataTransfer })\n    document.dispatchEvent(event)\n\n    await vi.waitFor(() => {\n      expect(mockNode.pasteFile).toHaveBeenCalledWith(imageFile)\n    })\n    expect(mockNode.pasteFiles).toHaveBeenCalledWith([imageFile])\n    expect(createNode).not.toHaveBeenCalled()\n  })\n\n  it('should call canvas pasteFromClipboard for non-workflow text', () => {"""
-          text = replace_once(text, anchor, addition, 'usePaste selected-node priority insertion')
-          path.write_text(text)
-
-          # LGraphNode.test.ts: preserve upstream's global Pinia/import-form mocks,
-          # then layer only the PR's DnD regression coverage onto that harness.
-          path = Path('src/renderer/extensions/vueNodes/components/LGraphNode.test.ts')
-          text = path.read_text()
-          text = replace_once(
-              text,
-              "import { render, screen } from '@testing-library/vue'",
-              "import { render, screen, waitFor } from '@testing-library/vue'",
-              'LGraphNode waitFor import',
-          )
-          text = replace_once(
-              text,
-              """const mockData = vi.hoisted(() => ({\n  mockExecuting: false,\n  mockLgraphNode: null as Record<string, unknown> | null\n}))""",
-              """const mockData = vi.hoisted(() => ({\n  mockExecuting: false,\n  mockLgraphNode: null as Record<string, unknown> | null,\n  toastErrorHandler: vi.fn()\n}))""",
-              'LGraphNode hoisted error mock',
-          )
-          text = replace_once(
-              text,
-              """  app: {\n    rootGraph: { id: 'graph-test', getNodeById: vi.fn() },""",
-              """  app: {\n    dragOverNode: null,\n    rootGraph: { id: 'graph-test', getNodeById: vi.fn() },""",
-              'LGraphNode drag owner mock',
-          )
-          text = replace_once(
-              text,
-              """  useErrorHandling: () => ({\n    toastErrorHandler: vi.fn()\n  })""",
-              """  useErrorHandling: () => ({\n    toastErrorHandler: mockData.toastErrorHandler\n  })""",
-              'LGraphNode error handler injection',
-          )
-          text = replace_once(
-              text,
-              """}\nconst mockNodeData: NodeState = {""",
-              """}\n\nfunction createDragEvent(type: string, dataTransfer: DataTransfer): DragEvent {\n  const event = new Event(type, { bubbles: true, cancelable: true })\n  Object.defineProperty(event, 'dataTransfer', {\n    configurable: true,\n    value: dataTransfer\n  })\n  return event as DragEvent\n}\n\nfunction createFileDataTransfer(): DataTransfer {\n  const dataTransfer = new DataTransfer()\n  dataTransfer.items.add(new File([''], 'test.png', { type: 'image/png' }))\n  return dataTransfer\n}\n\nfunction createUriDataTransferWithBmpPlaceholder(): DataTransfer {\n  const dataTransfer = new DataTransfer()\n  dataTransfer.items.add(\n    new File([''], 'placeholder.bmp', { type: 'image/bmp' })\n  )\n  dataTransfer.setData('text/uri-list', 'https://example.com/image.png')\n  return dataTransfer\n}\n\nfunction createRealBmpDataTransfer(): DataTransfer {\n  const dataTransfer = new DataTransfer()\n  dataTransfer.items.add(\n    new File([new Uint8Array([0x42, 0x4d, 0x00, 0x00])], 'real.bmp', {\n      type: 'image/bmp'\n    })\n  )\n  return dataTransfer\n}\n\nconst mockNodeData: NodeState = {""",
-              'LGraphNode DnD helpers',
-          )
-          text = replace_once(
-              text,
-              """    canvasStore.selectedNodeIds.clear()\n    canvasStore.currentGraph = null\n    const settingStore = useSettingStore()""",
-              """    canvasStore.selectedNodeIds.clear()\n    canvasStore.currentGraph = null\n    app.dragOverNode = null\n    mockData.toastErrorHandler.mockReset()\n    const settingStore = useSettingStore()""",
-              'LGraphNode beforeEach cleanup',
-          )
-
-          start = text.find("  describe('handleDrop', () => {")
-          if start < 0:
-              raise SystemExit('LGraphNode handleDrop block start not found')
-          expected_tail = "  })\n})\n"
-          if not text[start:].endswith(expected_tail):
-              raise SystemExit('LGraphNode handleDrop block is no longer final; refusing broad replacement')
-          new_block = r'''  describe('handleDrop', () => {
-    it('should stop propagation when onDragDrop returns true', async () => {
-      const onDragDrop = vi.fn().mockReturnValue(true)
-      mockData.mockLgraphNode = {
-        id: mockNodeData.id,
-        onDragDrop,
-        onDragOver: vi.fn(() => true),
-        isSubgraphNode: () => false
-      }
-
-      const { container, baseElement } = renderLGraphNode({
-        nodeData: mockNodeData
-      })
-      const root = getNodeRoot(container)
-      const dataTransfer = createFileDataTransfer()
-
-      const parentListener = vi.fn()
-      baseElement.addEventListener('drop', parentListener)
-
-      root.dispatchEvent(createDragEvent('dragover', dataTransfer))
-      root.dispatchEvent(createDragEvent('drop', dataTransfer))
-
-      expect(onDragDrop).toHaveBeenCalled()
-      expect(parentListener).not.toHaveBeenCalled()
-    })
-
-    it('should let drops bubble when dragover rejects them', async () => {
-      const onDragDrop = vi.fn().mockReturnValue(true)
-      mockData.mockLgraphNode = {
-        id: mockNodeData.id,
-        onDragDrop,
-        onDragOver: vi.fn(() => false),
-        isSubgraphNode: () => false
-      }
-
-      const { container, baseElement } = renderLGraphNode({
-        nodeData: mockNodeData
-      })
-      const root = getNodeRoot(container)
-      const dataTransfer = createFileDataTransfer()
-
-      const parentListener = vi.fn()
-      baseElement.addEventListener('drop', parentListener)
-
-      root.dispatchEvent(createDragEvent('dragover', dataTransfer))
-      root.dispatchEvent(createDragEvent('drop', dataTransfer))
-
-      expect(onDragDrop).not.toHaveBeenCalled()
-      expect(parentListener).toHaveBeenCalled()
-    })
-
-    it('should allow URI drops with only bmp placeholders to bubble to parent handlers', async () => {
-      const onDragDrop = vi.fn().mockReturnValue(true)
-      mockData.mockLgraphNode = {
-        id: mockNodeData.id,
-        onDragDrop,
-        onDragOver: vi.fn(() => true),
-        isSubgraphNode: () => false
-      }
-
-      const { container, baseElement } = renderLGraphNode({
-        nodeData: mockNodeData
-      })
-      const root = getNodeRoot(container)
-      const dataTransfer = createUriDataTransferWithBmpPlaceholder()
-
-      const parentListener = vi.fn()
-      baseElement.addEventListener('drop', parentListener)
-
-      root.dispatchEvent(createDragEvent('dragover', dataTransfer))
-      root.dispatchEvent(createDragEvent('drop', dataTransfer))
-
-      expect(onDragDrop).not.toHaveBeenCalled()
-      expect(parentListener).toHaveBeenCalled()
-      expect(app.dragOverNode).toBeNull()
-    })
-
-    it('should keep real bmp files on the node drop path', async () => {
-      const onDragDrop = vi.fn().mockResolvedValue(true)
-      mockData.mockLgraphNode = {
-        id: mockNodeData.id,
-        onDragDrop,
-        onDragOver: vi.fn(() => true),
-        isSubgraphNode: () => false
-      }
-
-      const { container, baseElement } = renderLGraphNode({
-        nodeData: mockNodeData
-      })
-      const root = getNodeRoot(container)
-      const dataTransfer = createRealBmpDataTransfer()
-
-      const parentListener = vi.fn()
-      baseElement.addEventListener('drop', parentListener)
-
-      root.dispatchEvent(createDragEvent('dragover', dataTransfer))
-      root.dispatchEvent(createDragEvent('drop', dataTransfer))
-
-      await waitFor(() => expect(onDragDrop).toHaveBeenCalled())
-      expect(parentListener).not.toHaveBeenCalled()
-      expect(app.dragOverNode).toBeNull()
-    })
-
-    it('should not clear another node drag-over owner when it has no drop handler', () => {
-      const ownerNode = {
-        id: toNodeId('owner-node'),
-        onDragDrop: vi.fn()
-      }
-      app.dragOverNode = ownerNode
-      mockData.mockLgraphNode = {
-        id: mockNodeData.id,
-        isSubgraphNode: () => false
-      }
-
-      const { container, baseElement } = renderLGraphNode({
-        nodeData: mockNodeData
-      })
-      const root = getNodeRoot(container)
-      const parentListener = vi.fn()
-      baseElement.addEventListener('drop', parentListener)
-
-      root.dispatchEvent(createDragEvent('drop', createFileDataTransfer()))
-
-      expect(parentListener).toHaveBeenCalled()
-      expect(app.dragOverNode).toBe(ownerNode)
-    })
-
-    it('should surface rejected node drops and clear drag-over state', async () => {
-      const error = new Error('Upload failed')
-      const onDragDrop = vi.fn().mockRejectedValue(error)
-      mockData.mockLgraphNode = {
-        id: mockNodeData.id,
-        onDragDrop,
-        onDragOver: vi.fn(() => true),
-        isSubgraphNode: () => false
-      }
-
-      const { container, baseElement } = renderLGraphNode({
-        nodeData: mockNodeData
-      })
-      const root = getNodeRoot(container)
-      const dataTransfer = createFileDataTransfer()
-      const parentListener = vi.fn()
-      baseElement.addEventListener('drop', parentListener)
-
-      root.dispatchEvent(createDragEvent('dragover', dataTransfer))
-      root.dispatchEvent(createDragEvent('drop', dataTransfer))
-
-      await waitFor(() =>
-        expect(mockData.toastErrorHandler).toHaveBeenCalledWith(error)
-      )
-      expect(parentListener).not.toHaveBeenCalled()
-      expect(app.dragOverNode).toBeNull()
-    })
-
-    it('should stop propagation when onDragDrop returns a promise', async () => {
-      const onDragDrop = vi.fn().mockResolvedValue(true)
-      mockData.mockLgraphNode = {
-        id: mockNodeData.id,
-        onDragDrop,
-        onDragOver: vi.fn(() => true),
-        isSubgraphNode: () => false
-      }
-
-      const { container, baseElement } = renderLGraphNode({
-        nodeData: mockNodeData
-      })
-      const root = getNodeRoot(container)
-      const dataTransfer = createFileDataTransfer()
-
-      const parentListener = vi.fn()
-      baseElement.addEventListener('drop', parentListener)
-
-      root.dispatchEvent(createDragEvent('dragover', dataTransfer))
-      root.dispatchEvent(createDragEvent('drop', dataTransfer))
-
-      await waitFor(() => expect(onDragDrop).toHaveBeenCalled())
-      expect(parentListener).not.toHaveBeenCalled()
-    })
-
-    it('should handle drop from a child element inside the node', async () => {
-      const onDragDrop = vi.fn().mockResolvedValue(true)
-      mockData.mockLgraphNode = {
-        id: mockNodeData.id,
-        onDragDrop,
-        onDragOver: vi.fn(() => true),
-        isSubgraphNode: () => false
-      }
-
-      const { baseElement } = renderLGraphNode({
-        nodeData: mockNodeData
-      })
-      const child = screen.getByTestId('node-inner-wrapper')
-      const dataTransfer = createFileDataTransfer()
-
-      const parentListener = vi.fn()
-      baseElement.addEventListener('drop', parentListener)
-
-      child.dispatchEvent(createDragEvent('dragover', dataTransfer))
-      child.dispatchEvent(createDragEvent('drop', dataTransfer))
-
-      await waitFor(() => expect(onDragDrop).toHaveBeenCalled())
-      expect(parentListener).not.toHaveBeenCalled()
-    })
-  })
-'''
-          text = text[:start] + new_block + "})\n"
-          path.write_text(text)
-          PY
-
+          python3 tools/pr10841_reconcile.py
           git add src/composables/usePaste.test.ts \
             src/renderer/extensions/vueNodes/components/LGraphNode.test.ts
           git diff --cached --check
@@ -359,38 +61,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Canonical format
+      - name: Format and scope check
         shell: bash
         run: |
           set -euo pipefail
-          files=(
-            src/composables/node/useNodeDragAndDrop.test.ts
-            src/composables/node/useNodeDragAndDrop.ts
-            src/composables/usePaste.test.ts
-            src/composables/usePaste.ts
-            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts
-            src/renderer/extensions/vueNodes/components/LGraphNode.vue
-            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts
-            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts
-            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts
-            src/scripts/app.test.ts
-            src/scripts/app.ts
-            src/utils/__tests__/eventUtils.test.ts
-            src/utils/eventUtils.ts
-            src/utils/mediaUploadUtil.ts
-            src/workbench/extensions/agent/AgentPanelRoot.test.ts
-            src/workbench/extensions/agent/AgentPanelRoot.vue
-          )
-          pnpm exec oxfmt --write "${files[@]}"
-          git add "${files[@]}"
-          pnpm exec oxfmt --check "${files[@]}"
-          git diff --cached --check
-
-      - name: Enforce exact reconciliation scope
-        shell: bash
-        run: |
-          set -euo pipefail
-          expected=$(cat <<'EOF'
+          mapfile -t files <<'EOF'
           src/composables/node/useNodeDragAndDrop.test.ts
           src/composables/node/useNodeDragAndDrop.ts
           src/composables/usePaste.test.ts
@@ -408,9 +83,13 @@ jobs:
           src/workbench/extensions/agent/AgentPanelRoot.test.ts
           src/workbench/extensions/agent/AgentPanelRoot.vue
           EOF
-          )
-          actual=$(git diff --name-only upstream/main | sort)
-          expected=$(printf '%s\n' "$expected" | sed 's/^          //' | sort)
+          pnpm exec oxfmt --write "${files[@]}"
+          git add "${files[@]}"
+          pnpm exec oxfmt --check "${files[@]}"
+          git diff --cached --check
+
+          actual=$(git diff --name-only upstream/main | grep '^src/' | sort)
+          expected=$(printf '%s\n' "${files[@]}" | sort)
           diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual")
           test "$(printf '%s\n' "$actual" | sed '/^$/d' | wc -l)" -eq 16
 
@@ -418,24 +97,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          files=(
-            src/composables/node/useNodeDragAndDrop.test.ts
-            src/composables/node/useNodeDragAndDrop.ts
-            src/composables/usePaste.test.ts
-            src/composables/usePaste.ts
-            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts
-            src/renderer/extensions/vueNodes/components/LGraphNode.vue
-            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts
-            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts
-            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts
-            src/scripts/app.test.ts
-            src/scripts/app.ts
-            src/utils/__tests__/eventUtils.test.ts
-            src/utils/eventUtils.ts
-            src/utils/mediaUploadUtil.ts
-            src/workbench/extensions/agent/AgentPanelRoot.test.ts
-            src/workbench/extensions/agent/AgentPanelRoot.vue
-          )
+          mapfile -t files < <(git diff --name-only upstream/main | grep -E '^src/.*\.(ts|vue)$')
           pnpm exec eslint --no-cache "${files[@]}"
 
       - name: Vitest cleanup audit
@@ -458,15 +120,18 @@ jobs:
             src/utils/__tests__/eventUtils.test.ts \
             src/workbench/extensions/agent/AgentPanelRoot.test.ts
 
-      - name: Squash validated candidate to one commit and checkpoint
+      - name: Squash validated candidate and checkpoint
         shell: bash
         run: |
           set -euo pipefail
+          rm tools/pr10841_reconcile.py
           git add -A
           git diff --cached --check
+          test "$(git diff --name-only upstream/main | grep '^src/' | wc -l)" -eq 16
+          test -z "$(git diff --name-only upstream/main | grep -v '^src/' || true)"
+
           git reset --soft upstream/main
           git commit -m 'fix: restore Vue upload-node file drops'
-
           test "$(git rev-list --count upstream/main..HEAD)" -eq 1
           test "$(git rev-parse HEAD^)" = "$(git rev-parse upstream/main)"
           test "$(git diff --name-only upstream/main..HEAD | wc -l)" -eq 16
