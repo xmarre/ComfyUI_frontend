@@ -107,6 +107,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Normalize manual conflict resolution
+        shell: bash
+        run: |
+          set -euo pipefail
+          path=src/platform/workflow/core/services/workflowService.test.ts
+          pnpm exec oxfmt --write "$path"
+          if ! git diff --quiet -- "$path"; then
+            git add "$path"
+            git -c core.hooksPath=/dev/null commit --amend --no-edit
+          fi
+          [[ "$(git rev-parse HEAD^)" == "$EXPECTED_BASE" ]]
+          [[ "$(git rev-list --count "$EXPECTED_BASE..HEAD")" == "1" ]]
+          git diff --check "$EXPECTED_BASE...HEAD"
+
       - name: Validate reconciliation
         shell: bash
         run: |
