@@ -1,0 +1,185 @@
+name: PR 14897 reconciliation candidate
+
+on:
+  push:
+    branches:
+      - mirror/pr-14897-reconcile-runner-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PR_HEAD: 13e4329d5c8047a27904d1833edbb2aca6d0fe19
+      EXPECTED_BASE: dd6511802787b272c4202cd6a3e4b8c876f4155b
+      CANDIDATE_BRANCH: mirror/pr-14897-reconcile-candidate-20260910
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Reconcile single PR commit onto current upstream base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git || true
+          git fetch --no-tags upstream main
+          actual_base="$(git rev-parse upstream/main)"
+          if [[ "$actual_base" != "$EXPECTED_BASE" ]]; then
+            echo "Upstream main moved: expected $EXPECTED_BASE, got $actual_base" >&2
+            exit 42
+          fi
+
+          git config user.name "xmarre"
+          git config user.email "54859656+xmarre@users.noreply.github.com"
+          git checkout -B "$CANDIDATE_BRANCH" "$EXPECTED_BASE"
+
+          set +e
+          git -c core.hooksPath=/dev/null cherry-pick "$PR_HEAD"
+          cherry_status=$?
+          set -e
+
+          if [[ $cherry_status -ne 0 ]]; then
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            printf 'Conflicts:\n'; printf '  %s\n' "${conflicts[@]}"
+            if [[ ${#conflicts[@]} -eq 0 ]]; then
+              echo "Cherry-pick failed without unresolved files" >&2
+              exit 43
+            fi
+            for path in "${conflicts[@]}"; do
+              case "$path" in
+                src/platform/workflow/core/services/workflowService.test.ts|src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts)
+                  ;;
+                *)
+                  echo "Unexpected conflict path: $path" >&2
+                  exit 44
+                  ;;
+              esac
+            done
+
+            # Both conflicts are test-harness conflicts. Start from current main's
+            # dynamic-mock/global-Pinia versions and layer only this PR's behavioral
+            # expectations/coverage back on top.
+            git checkout --ours -- \
+              src/platform/workflow/core/services/workflowService.test.ts \
+              src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts
+
+            python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          workflow_test = Path('src/platform/workflow/core/services/workflowService.test.ts')
+          text = workflow_test.read_text()
+
+          anchor = """  vi.mocked(useWorkflowDraftStoreV2().markDraftUsed).mockImplementation(\n    () => {}\n  )\n"""
+          replacement = anchor + """  vi.mocked(useWorkflowDraftStoreV2().isPersistencePaused).mockReturnValue(false)\n  vi.mocked(useWorkflowDraftStoreV2().shouldNotifySaveFailure).mockReturnValue(true)\n  vi.mocked(useWorkflowDraftStoreV2().markSaveSucceeded).mockImplementation(\n    () => {}\n  )\n"""
+          if text.count(anchor) != 1:
+              raise SystemExit(f'workflowService.test.ts: expected one markDraftUsed setup anchor, got {text.count(anchor)}')
+          text = text.replace(anchor, replacement, 1)
+
+          meta = """          name: activeWorkflow.key,\n          isTemporary: activeWorkflow.isTemporary\n"""
+          meta_replacement = """          name: activeWorkflow.key,\n          isTemporary: activeWorkflow.isTemporary,\n          isModified: activeWorkflow.isModified\n"""
+          if text.count(meta) != 1:
+              raise SystemExit(f'workflowService.test.ts: expected one draft metadata assertion, got {text.count(meta)}')
+          text = text.replace(meta, meta_replacement, 1)
+          workflow_test.write_text(text)
+
+          draft_test = Path('src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts')
+          text = draft_test.read_text()
+
+          import_anchor = "import type { reportError } from '@/platform/telemetry/reportError'\n"
+          if text.count(import_anchor) != 1:
+              raise SystemExit('workflowDraftStoreV2.test.ts: reportError import anchor mismatch')
+          text = text.replace(import_anchor, import_anchor + "import { app as comfyApp } from '@/scripts/app'\n", 1)
+
+          app_mock = """vi.mock<unknown>(import('@/scripts/app'), () => ({\n  app: {\n    loadGraphData: vi.fn().mockResolvedValue(undefined)\n  }\n}))\n"""
+          cloud_mock = """\nvi.mock<unknown>(import('@/platform/distribution/types'), () => ({ isCloud: true }))\n"""
+          if text.count(app_mock) != 1:
+              raise SystemExit('workflowDraftStoreV2.test.ts: app mock anchor mismatch')
+          text = text.replace(app_mock, app_mock + cloud_mock, 1)
+
+          old_rollback = """    it('rolls the persisted index back when the final index write fails after eviction', () => {\n      const store = useWorkflowDraftStoreV2()\n      seedDraftDirect('workflows/a.json', '{\\"id\\":\\"a\\"}', 'a')\n\n      let payloadFailures = 0\n      let indexFailureInjected = false\n      withQuotaMock((key) => {\n        if (key.startsWith(PAYLOAD_PREFIX) && payloadFailures === 0) {\n          payloadFailures++\n          return true\n        }\n        if (key !== INDEX_KEY || indexFailureInjected) return false\n        indexFailureInjected = true\n        return true\n      })\n\n      const ok = store.saveDraft('workflows/incoming.json', '{\\"id\\":\\"new\\"}', {\n        name: 'incoming',\n        isTemporary: true\n      })\n      expect(ok).toBe(false)\n      expect(indexFailureInjected).toBe(true)\n\n      const persisted = readIndexFromStorage()\n      expect(persisted.order).not.toContain(hashPath('workflows/incoming.json'))\n      expect(persisted.order).not.toContain(hashPath('workflows/a.json'))\n      expect(store.getDraft('workflows/incoming.json')).toBeNull()\n    })\n"""
+          new_rollback = """    it('restores the evicted draft when the final index write fails', () => {\n      const store = useWorkflowDraftStoreV2()\n      seedDraftDirect('workflows/a.json', '{\\"id\\":\\"a\\"}', 'a')\n\n      let payloadFailures = 0\n      let indexWrites = 0\n      let finalIndexFailureInjected = false\n      withQuotaMock((key) => {\n        if (key.startsWith(PAYLOAD_PREFIX) && payloadFailures === 0) {\n          payloadFailures++\n          return true\n        }\n        if (key !== INDEX_KEY) return false\n        indexWrites++\n        if (indexWrites !== 2 || finalIndexFailureInjected) return false\n        finalIndexFailureInjected = true\n        return true\n      })\n\n      const ok = store.saveDraft('workflows/incoming.json', '{\\"id\\":\\"new\\"}', {\n        name: 'incoming',\n        isTemporary: true\n      })\n      expect(ok).toBe(false)\n      expect(finalIndexFailureInjected).toBe(true)\n\n      const persisted = readIndexFromStorage()\n      expect(persisted.order).not.toContain(hashPath('workflows/incoming.json'))\n      expect(persisted.order).toContain(hashPath('workflows/a.json'))\n      expect(store.getDraft('workflows/incoming.json')).toBeNull()\n      expect(store.getDraft('workflows/a.json')?.data).toBe('{\\"id\\":\\"a\\"}')\n    })\n"""
+          if text.count(old_rollback) != 1:
+              raise SystemExit(f'workflowDraftStoreV2.test.ts: rollback block mismatch ({text.count(old_rollback)})')
+          text = text.replace(old_rollback, new_rollback, 1)
+
+          pattern = re.compile(r"(const result = await store\.loadPersistedWorkflow\(\{\n)(?!\s*workflowName:)")
+          text, count = pattern.subn(r"\1        workflowName: null,\n", text)
+          if count != 3:
+              raise SystemExit(f'workflowDraftStoreV2.test.ts: expected 3 existing loadPersistedWorkflow calls, got {count}')
+
+          insert_anchor = """    it('returns false when no drafts available', async () => {\n"""
+          extra_tests = """    it('does not use unscoped legacy fallbacks outside personal workspace', async () => {\n      sessionStorage.setItem(\n        'Comfy.Workspace.Current',\n        JSON.stringify({ type: 'team', id: 'team-workspace' })\n      )\n      sessionStorage.setItem('workflow:test-client', '{\\"nodes\\":[1]}')\n      localStorage.setItem('workflow', '{\\"nodes\\":[2]}')\n      const store = useWorkflowDraftStoreV2()\n\n      const result = await store.loadPersistedWorkflow({\n        workflowName: null,\n        fallbackToLatestDraft: true\n      })\n\n      expect(result).toBe(false)\n      expect(comfyApp.loadGraphData).not.toHaveBeenCalled()\n    })\n\n    it('keeps the legacy fallback available in personal workspace', async () => {\n      sessionStorage.setItem('workflow:test-client', '{\\"nodes\\":[]}')\n      const store = useWorkflowDraftStoreV2()\n\n      const result = await store.loadPersistedWorkflow({\n        workflowName: null,\n        fallbackToLatestDraft: true\n      })\n\n      expect(result).toBe(true)\n      expect(comfyApp.loadGraphData).toHaveBeenCalledWith(\n        { nodes: [] },\n        true,\n        true,\n        null\n      )\n    })\n\n"""
+          if text.count(insert_anchor) != 1:
+              raise SystemExit('workflowDraftStoreV2.test.ts: insertion anchor mismatch')
+          text = text.replace(insert_anchor, extra_tests + insert_anchor, 1)
+          draft_test.write_text(text)
+          PY
+
+            git add \
+              src/platform/workflow/core/services/workflowService.test.ts \
+              src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts
+            git -c core.hooksPath=/dev/null cherry-pick --continue
+          fi
+
+          [[ "$(git rev-parse HEAD^)" == "$EXPECTED_BASE" ]] || {
+            echo "Candidate is not a single commit directly on expected base" >&2
+            exit 45
+          }
+          [[ "$(git rev-list --count "$EXPECTED_BASE..HEAD")" == "1" ]] || {
+            echo "Candidate topology is not one commit" >&2
+            exit 46
+          }
+          git diff --check "$EXPECTED_BASE...HEAD"
+          git status --short
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 26.8.2
+          cache: pnpm
+
+      - name: Install pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.13.1 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate reconciliation
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm typecheck
+          NODE_OPTIONS=--no-experimental-webstorage pnpm test:unit \
+            src/platform/workflow/core/services/workflowService.test.ts \
+            src/platform/workflow/core/services/workflowService.persistence.test.ts \
+            src/platform/workflow/management/stores/workflowStore.persistence.test.ts \
+            src/platform/workflow/persistence/base/storageIO.test.ts \
+            src/platform/workflow/persistence/base/workflowViewState.test.ts \
+            src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.reconciliation.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.collision.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.malformedPayload.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.recovery.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.persistenceControl.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts
+          mapfile -t ts_files < <(git diff --name-only "$EXPECTED_BASE...HEAD" -- '*.ts')
+          pnpm exec oxfmt --check "${ts_files[@]}"
+          printf '%s\0' "${ts_files[@]}" | xargs -0 pnpm exec eslint --no-cache
+          git diff --check "$EXPECTED_BASE...HEAD"
+
+      - name: Publish validated mirror candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin "HEAD:refs/heads/$CANDIDATE_BRANCH" --force
