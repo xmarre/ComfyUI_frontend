@@ -1,4 +1,4 @@
-name: PR 10841 mirror reconciliation runner
+name: PR 10841 current-base validation
 
 on:
   push:
@@ -6,47 +6,28 @@ on:
       - mirror/pr10841-reconcile-runner-20260910
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  reconcile:
+  validate:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: mirror/pr10841-reconcile-candidate-20260910
+          ref: mirror/pr10841-reconcile-current-20260910
           fetch-depth: 0
 
-      - name: Configure and verify base
+      - name: Verify exact candidate and live base
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
           git fetch --no-tags upstream main
-          test "$(git rev-parse HEAD)" = 1415930aed3357e7c2ac8d330c0814ec899928df
-          test "$(git rev-parse upstream/main)" = 7e678911d2725e16ebda7b70d460af5a3522f1e1
-          test "$(git rev-parse HEAD~4)" = 7e678911d2725e16ebda7b70d460af5a3522f1e1
-
-      - name: Apply clean overlap files
-        shell: bash
-        run: |
-          set -euo pipefail
-          old_base=ca54f4bd2eb03b9fc992feee3aff3b9700f73395
-          old_head=a8d7c7c823efbe6126bcd404f7fc97fcfeb2d37b
-          git diff --binary "$old_base" "$old_head" -- \
-            src/scripts/app.test.ts \
-            src/scripts/app.ts \
-            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
-            src/workbench/extensions/agent/AgentPanelRoot.vue \
-            > /tmp/pr10841-clean-overlap.patch
-          git apply --3way --index /tmp/pr10841-clean-overlap.patch
-          python3 tools/pr10841_reconcile.py
-          git add src/composables/usePaste.test.ts \
-            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts
-          git diff --cached --check
+          test "$(git rev-parse HEAD)" = bae97a7c3cf5d53533ccc0f5dd4fb0e0a21d4455
+          test "$(git rev-parse HEAD^)" = 61437e774d1bce44cff35b451adb49cfe7f0c93d
+          test "$(git rev-parse upstream/main)" = 61437e774d1bce44cff35b451adb49cfe7f0c93d
+          test "$(git rev-list --count upstream/main..HEAD)" -eq 1
 
       - uses: pnpm/action-setup@v4
         with:
@@ -61,7 +42,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Format and scope check
+      - name: Verify formatting and exact scope
         shell: bash
         run: |
           set -euo pipefail
@@ -83,12 +64,9 @@ jobs:
           src/workbench/extensions/agent/AgentPanelRoot.test.ts
           src/workbench/extensions/agent/AgentPanelRoot.vue
           EOF
-          pnpm exec oxfmt --write "${files[@]}"
-          git add "${files[@]}"
           pnpm exec oxfmt --check "${files[@]}"
-          git diff --cached --check
-
-          actual=$(git diff --name-only upstream/main | grep '^src/' | sort)
+          git diff --check upstream/main..HEAD
+          actual=$(git diff --name-only upstream/main..HEAD | sort)
           expected=$(printf '%s\n' "${files[@]}" | sort)
           diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual")
           test "$(printf '%s\n' "$actual" | sed '/^$/d' | wc -l)" -eq 16
@@ -97,13 +75,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t files < <(git diff --name-only upstream/main | grep -E '^src/.*\.(ts|vue)$')
+          mapfile -t files < <(git diff --name-only upstream/main..HEAD | grep -E '^src/.*\.(ts|vue)$')
           pnpm exec eslint --no-cache "${files[@]}"
 
       - name: Vitest cleanup audit
         run: pnpm oxlint:audit
 
-      - name: Targeted regression tests
+      - name: Focused and adjacent regression tests
         run: |
           pnpm exec vitest run \
             src/composables/node/useNodeDragAndDrop.test.ts \
@@ -112,7 +90,13 @@ jobs:
             src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
             src/scripts/app.test.ts \
             src/utils/__tests__/eventUtils.test.ts \
-            src/workbench/extensions/agent/AgentPanelRoot.test.ts
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
+            src/workbench/extensions/agent/components/agent/ConversationView.test.ts \
+            src/workbench/extensions/agent/components/agent/message/AgentMessage.test.ts \
+            src/workbench/extensions/agent/components/agent/message/WorkSummary.test.ts \
+            src/workbench/extensions/agent/services/agent/agentActivityRows.test.ts \
+            src/workbench/extensions/agent/services/agent/agentToolGlyph.test.ts \
+            src/workbench/extensions/agent/utils/formatDuration.test.ts
 
       - name: Typecheck
         run: pnpm typecheck
@@ -120,24 +104,7 @@ jobs:
       - name: Knip
         run: pnpm knip
 
-      - name: Squash validated candidate and checkpoint
-        shell: bash
+      - name: Repository consistency checks
         run: |
-          set -euo pipefail
-          rm tools/pr10841_reconcile.py
-          git add -A
-          git diff --cached --check
-          test "$(git diff --name-only upstream/main | grep '^src/' | wc -l)" -eq 16
-          test -z "$(git diff --name-only upstream/main | grep -v '^src/' || true)"
-
-          git reset --soft upstream/main
-          git commit -m 'fix: restore Vue upload-node file drops'
-          test "$(git rev-list --count upstream/main..HEAD)" -eq 1
-          test "$(git rev-parse HEAD^)" = "$(git rev-parse upstream/main)"
-          test "$(git diff --name-only upstream/main..HEAD | wc -l)" -eq 16
-          git diff --check upstream/main..HEAD
-
-          remote_sha=$(git ls-remote origin refs/heads/mirror/pr10841-reconcile-candidate-20260910 | cut -f1)
-          git push \
-            --force-with-lease=refs/heads/mirror/pr10841-reconcile-candidate-20260910:$remote_sha \
-            origin HEAD:refs/heads/mirror/pr10841-reconcile-candidate-20260910
+          pnpm exec tsx scripts/check-unused-i18n-keys.ts
+          pnpm exec tsx scripts/check-frozen-dirs.ts
