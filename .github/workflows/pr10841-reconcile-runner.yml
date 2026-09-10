@@ -1,0 +1,145 @@
+name: PR 10841 mirror reconciliation runner
+
+on:
+  push:
+    branches:
+      - mirror/pr10841-reconcile-runner-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    if: ${{ !contains(github.event.head_commit.message, '[pr10841-reconciled]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure repositories
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
+          git fetch --no-tags upstream main
+          git fetch --no-tags origin codex/async-dnd-drop-bridge
+
+      - name: Three-way apply remaining PR overlap
+        shell: bash
+        run: |
+          set -euo pipefail
+          old_base=ca54f4bd2eb03b9fc992feee3aff3b9700f73395
+          old_head=a8d7c7c823efbe6126bcd404f7fc97fcfeb2d37b
+          files=(
+            src/composables/usePaste.test.ts
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts
+            src/scripts/app.test.ts
+            src/scripts/app.ts
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts
+            src/workbench/extensions/agent/AgentPanelRoot.vue
+          )
+          git diff --binary "$old_base" "$old_head" -- "${files[@]}" > /tmp/pr10841-overlap.patch
+          if ! git apply --3way --index /tmp/pr10841-overlap.patch; then
+            echo 'Three-way apply produced conflicts:' >&2
+            git status --short >&2
+            git diff --cc >&2 || true
+            exit 1
+          fi
+          git status --short
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.13.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.8.2
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Format reconciled files
+        run: |
+          pnpm exec oxfmt --write \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/node/useNodeDragAndDrop.ts \
+            src/composables/usePaste.test.ts \
+            src/composables/usePaste.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.ts \
+            src/utils/mediaUploadUtil.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.vue
+          git add -A
+          git diff --cached --check
+
+      - name: Enforce reconciliation scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          allowed=$(cat <<'EOF'
+          .github/workflows/pr10841-reconcile-runner.yml
+          src/composables/node/useNodeDragAndDrop.test.ts
+          src/composables/node/useNodeDragAndDrop.ts
+          src/composables/usePaste.test.ts
+          src/composables/usePaste.ts
+          src/renderer/extensions/vueNodes/components/LGraphNode.test.ts
+          src/renderer/extensions/vueNodes/components/LGraphNode.vue
+          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts
+          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts
+          src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts
+          src/scripts/app.test.ts
+          src/scripts/app.ts
+          src/utils/__tests__/eventUtils.test.ts
+          src/utils/eventUtils.ts
+          src/utils/mediaUploadUtil.ts
+          src/workbench/extensions/agent/AgentPanelRoot.test.ts
+          src/workbench/extensions/agent/AgentPanelRoot.vue
+          EOF
+          )
+          actual=$(git diff --name-only upstream/main | sort)
+          unexpected=$(comm -23 <(printf '%s\n' "$actual") <(printf '%s\n' "$allowed" | sed 's/^          //' | sort))
+          if [[ -n "$unexpected" ]]; then
+            echo 'Unexpected files in reconciliation:' >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+          printf 'Reconciled diff files:\n%s\n' "$actual"
+
+      - name: Lint
+        run: pnpm lint:no-cache
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Targeted regression tests
+        run: |
+          pnpm exec vitest run \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/usePaste.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/scripts/app.test.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts
+
+      - name: Checkpoint reconciled tree and remove runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/pr10841-reconcile-runner.yml
+          git add -A
+          git diff --cached --check
+          git commit -m '[pr10841-reconciled] reconcile current upstream on mirror'
+          git push origin HEAD:${GITHUB_REF_NAME}
