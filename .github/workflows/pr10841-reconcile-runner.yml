@@ -26,9 +26,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
           git fetch --no-tags upstream main
-          test "$(git rev-parse HEAD)" = 99bf0b0e5baaa70b6d7767d1a80fe8a3a4ace503
+          test "$(git rev-parse HEAD)" = 1415930aed3357e7c2ac8d330c0814ec899928df
           test "$(git rev-parse upstream/main)" = 7e678911d2725e16ebda7b70d460af5a3522f1e1
-          test "$(git rev-parse HEAD~3)" = 7e678911d2725e16ebda7b70d460af5a3522f1e1
+          test "$(git rev-parse HEAD~4)" = 7e678911d2725e16ebda7b70d460af5a3522f1e1
 
       - name: Apply clean overlap files
         shell: bash
@@ -103,12 +103,6 @@ jobs:
       - name: Vitest cleanup audit
         run: pnpm oxlint:audit
 
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Knip
-        run: pnpm knip
-
       - name: Targeted regression tests
         run: |
           pnpm exec vitest run \
@@ -119,6 +113,12 @@ jobs:
             src/scripts/app.test.ts \
             src/utils/__tests__/eventUtils.test.ts \
             src/workbench/extensions/agent/AgentPanelRoot.test.ts
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Knip
+        run: pnpm knip
 
       - name: Squash validated candidate and checkpoint
         shell: bash
