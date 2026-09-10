@@ -26,9 +26,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
           git fetch --no-tags upstream main
-          test "$(git rev-parse HEAD)" = eb0664465e67c513e166610d94f7701dbec76931
+          test "$(git rev-parse HEAD)" = 99bf0b0e5baaa70b6d7767d1a80fe8a3a4ace503
           test "$(git rev-parse upstream/main)" = 7e678911d2725e16ebda7b70d460af5a3522f1e1
-          test "$(git rev-parse HEAD~2)" = 7e678911d2725e16ebda7b70d460af5a3522f1e1
+          test "$(git rev-parse HEAD~3)" = 7e678911d2725e16ebda7b70d460af5a3522f1e1
 
       - name: Apply clean overlap files
         shell: bash
