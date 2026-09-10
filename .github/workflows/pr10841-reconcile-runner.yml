@@ -1,4 +1,4 @@
-name: PR 10841 current-base validation
+name: PR 10841 guarded promotion
 
 on:
   push:
@@ -6,47 +6,39 @@ on:
       - mirror/pr10841-reconcile-runner-20260910
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  validate:
+  promote:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           ref: mirror/pr10841-reconcile-current-20260910
           fetch-depth: 0
 
-      - name: Verify exact candidate and live base
+      - name: Verify and promote with force-with-lease
         shell: bash
         run: |
           set -euo pipefail
+          candidate=bae97a7c3cf5d53533ccc0f5dd4fb0e0a21d4455
+          base=61437e774d1bce44cff35b451adb49cfe7f0c93d
+          old_head=a8d7c7c823efbe6126bcd404f7fc97fcfeb2d37b
+          branch=codex/async-dnd-drop-bridge
+
+          test "$(git rev-parse HEAD)" = "$candidate"
+          test "$(git rev-parse HEAD^)" = "$base"
+          test "$(git rev-list --count "$base"..HEAD)" -eq 1
+
           git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
           git fetch --no-tags upstream main
-          test "$(git rev-parse HEAD)" = bae97a7c3cf5d53533ccc0f5dd4fb0e0a21d4455
-          test "$(git rev-parse HEAD^)" = 61437e774d1bce44cff35b451adb49cfe7f0c93d
-          test "$(git rev-parse upstream/main)" = 61437e774d1bce44cff35b451adb49cfe7f0c93d
-          test "$(git rev-list --count upstream/main..HEAD)" -eq 1
+          test "$(git rev-parse upstream/main)" = "$base"
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.13.1
-          run_install: false
+          remote_head=$(git ls-remote origin "refs/heads/$branch" | cut -f1)
+          test "$remote_head" = "$old_head"
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26.8.2
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Verify formatting and exact scope
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -t files <<'EOF'
+          expected=$(cat <<'EOF'
           src/composables/node/useNodeDragAndDrop.test.ts
           src/composables/node/useNodeDragAndDrop.ts
           src/composables/usePaste.test.ts
@@ -64,47 +56,15 @@ jobs:
           src/workbench/extensions/agent/AgentPanelRoot.test.ts
           src/workbench/extensions/agent/AgentPanelRoot.vue
           EOF
-          pnpm exec oxfmt --check "${files[@]}"
-          git diff --check upstream/main..HEAD
-          actual=$(git diff --name-only upstream/main..HEAD | sort)
-          expected=$(printf '%s\n' "${files[@]}" | sort)
-          diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual")
+          )
+          actual=$(git diff --name-only "$base"..HEAD | sort)
+          diff -u <(printf '%s\n' "$expected" | sort) <(printf '%s\n' "$actual")
           test "$(printf '%s\n' "$actual" | sed '/^$/d' | wc -l)" -eq 16
+          git diff --check "$base"..HEAD
 
-      - name: Changed-file ESLint
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -t files < <(git diff --name-only upstream/main..HEAD | grep -E '^src/.*\.(ts|vue)$')
-          pnpm exec eslint --no-cache "${files[@]}"
+          git push \
+            --force-with-lease="refs/heads/$branch:$old_head" \
+            origin "HEAD:refs/heads/$branch"
 
-      - name: Vitest cleanup audit
-        run: pnpm oxlint:audit
-
-      - name: Focused and adjacent regression tests
-        run: |
-          pnpm exec vitest run \
-            src/composables/node/useNodeDragAndDrop.test.ts \
-            src/composables/usePaste.test.ts \
-            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
-            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
-            src/scripts/app.test.ts \
-            src/utils/__tests__/eventUtils.test.ts \
-            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
-            src/workbench/extensions/agent/components/agent/ConversationView.test.ts \
-            src/workbench/extensions/agent/components/agent/message/AgentMessage.test.ts \
-            src/workbench/extensions/agent/components/agent/message/WorkSummary.test.ts \
-            src/workbench/extensions/agent/services/agent/agentActivityRows.test.ts \
-            src/workbench/extensions/agent/services/agent/agentToolGlyph.test.ts \
-            src/workbench/extensions/agent/utils/formatDuration.test.ts
-
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Knip
-        run: pnpm knip
-
-      - name: Repository consistency checks
-        run: |
-          pnpm exec tsx scripts/check-unused-i18n-keys.ts
-          pnpm exec tsx scripts/check-frozen-dirs.ts
+          promoted=$(git ls-remote origin "refs/heads/$branch" | cut -f1)
+          test "$promoted" = "$candidate"
