@@ -95,7 +95,6 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 26.8.2
-          cache: pnpm
 
       - name: Install pnpm
         shell: bash
