@@ -19,6 +19,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git config user.name "PR 10841 Reconcile"
+          git config user.email "54859656+xmarre@users.noreply.github.com"
           git fetch origin \
             refs/heads/checkpoint/pr10841-20260917-bae97a7:refs/remotes/origin/pr10841-checkpoint \
             refs/heads/automation/pr10841-reconcile-20260917:refs/remotes/origin/reconcile-automation
