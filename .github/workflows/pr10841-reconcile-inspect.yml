@@ -21,7 +21,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base=14ba4d588081bbe799432523008944b13d19d1d9
+          base=c468f455e2c2152f9fb3b5bb074e4cd4ee7d23f9
           old_head=bae97a7c3cf5d53533ccc0f5dd4fb0e0a21d4455
           checkpoint=checkpoint/pr10841-20260917-bae97a7
 
@@ -189,14 +189,14 @@ jobs:
           pnpm exec tsx scripts/check-unused-i18n-keys.ts
           pnpm exec tsx scripts/check-frozen-dirs.ts
           git diff --quiet
-          git diff --cached 14ba4d588081bbe799432523008944b13d19d1d9 --check
+          git diff --cached c468f455e2c2152f9fb3b5bb074e4cd4ee7d23f9 --check
 
       - name: Build one-commit candidate and publish mirror
         shell: bash
         run: |
           set -euo pipefail
-          base=14ba4d588081bbe799432523008944b13d19d1d9
-          old_mirror=bae97a7c3cf5d53533ccc0f5dd4fb0e0a21d4455
+          base=c468f455e2c2152f9fb3b5bb074e4cd4ee7d23f9
+          old_mirror=4293246a08dd4d18a680ef623f8e2e74c10eb620
           mirror=mirror/pr10841-reconcile-20260917
 
           git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
