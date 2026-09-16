@@ -1,4 +1,4 @@
-name: PR 10841 reconciliation inspection
+name: PR 10841 reconciliation validation
 
 on:
   push:
@@ -6,55 +6,237 @@ on:
       - automation/pr10841-reconcile-20260917
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  inspect:
+  reconcile:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Reconstruct merge and print conflicts
+
+      - name: Reconcile reviewed upstream conflict
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "PR 10841 Reconcile"
-          git config user.email "54859656+xmarre@users.noreply.github.com"
-          git fetch origin \
-            refs/heads/checkpoint/pr10841-20260917-bae97a7:refs/remotes/origin/pr10841-checkpoint \
-            refs/heads/automation/pr10841-reconcile-20260917:refs/remotes/origin/reconcile-automation
-          git checkout --detach 14ba4d588081bbe799432523008944b13d19d1d9
+          base=14ba4d588081bbe799432523008944b13d19d1d9
+          old_head=bae97a7c3cf5d53533ccc0f5dd4fb0e0a21d4455
+          checkpoint=checkpoint/pr10841-20260917-bae97a7
+
+          git config user.name xmarre
+          git config user.email 54859656+xmarre@users.noreply.github.com
+          git fetch origin "refs/heads/$checkpoint:refs/remotes/origin/pr10841-checkpoint"
+          test "$(git rev-parse refs/remotes/origin/pr10841-checkpoint)" = "$old_head"
+          git checkout --detach "$base"
+
           set +e
-          git merge --no-commit --no-ff bae97a7c3cf5d53533ccc0f5dd4fb0e0a21d4455
+          git merge --no-commit --no-ff "$old_head"
           merge_rc=$?
           set -e
-          echo "merge_rc=$merge_rc"
-          echo "--- status ---"
-          git status --short
-          echo "--- unresolved paths ---"
-          git diff --name-only --diff-filter=U
-          for file in $(git diff --name-only --diff-filter=U); do
-            echo "===== CONFLICT: $file ====="
-            git checkout --conflict=merge -- "$file"
-            awk '
-              /^<<<<<<< / { start=NR-20; if (start < 1) start=1; in_conflict=1 }
-              { lines[NR]=$0 }
-              /^>>>>>>> / && in_conflict {
-                end=NR+20
-                for (i=start; i<=end; i++) pending[i]=1
-                in_conflict=0
-              }
-              END {
-                last=0
-                for (i=1; i<=NR; i++) {
-                  if (pending[i]) {
-                    if (last && i > last+1) print "..."
-                    printf "%6d  %s\n", i, lines[i]
-                    last=i
-                  }
-                }
-              }
-            ' "$file"
-          done
-          test "$merge_rc" -ne 0
+          test "$merge_rc" -eq 1
+
+          unresolved=$(git diff --name-only --diff-filter=U)
+          test "$unresolved" = "src/workbench/extensions/agent/AgentPanelRoot.test.ts"
+
+          file=src/workbench/extensions/agent/AgentPanelRoot.test.ts
+          git checkout --conflict=merge -- "$file"
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('src/workbench/extensions/agent/AgentPanelRoot.test.ts')
+          text = path.read_text()
+          anchor_text = "    const asset = new File(['x'], 'cat.png', { type: 'image/png' })\n"
+          anchor = text.index(anchor_text)
+          start = text.index('<<<<<<< ours\n', anchor)
+          separator = text.index('=======\n', start)
+          end_marker = text.index('>>>>>>> theirs\n', separator)
+          end = end_marker + len('>>>>>>> theirs\n')
+
+          ours = text[start + len('<<<<<<< ours\n'):separator]
+          theirs = text[separator + len('=======\n'):end_marker]
+
+          expected_ours = """    expect(dispatchDrag(target, 'drop', { files: [asset] })).toBe(true)
+              expect(
+                within(await screen.findByTestId('composer-asset-section')).getByText(
+                  'cat.png'
+                )
+              ).toBeInTheDocument()
+          """
+          expected_theirs = """    const assetDrop = dispatchDragEvent(target, 'drop', { files: [asset] })
+              expect(assetDrop.defaultPrevented).toBe(true)
+              expect(isDropEventHandled(assetDrop)).toBe(true)
+              expect(await screen.findByText('cat.png')).toBeInTheDocument()
+          """
+          assert ours == expected_ours, repr(ours)
+          assert theirs == expected_theirs, repr(theirs)
+
+          replacement = """    const assetDrop = dispatchDragEvent(target, 'drop', { files: [asset] })
+              expect(assetDrop.defaultPrevented).toBe(true)
+              expect(isDropEventHandled(assetDrop)).toBe(true)
+              expect(
+                within(await screen.findByTestId('composer-asset-section')).getByText(
+                  'cat.png'
+                )
+              ).toBeInTheDocument()
+          """
+          text = text[:start] + replacement + text[end:]
+          assert '<<<<<<<' not in text
+          assert '>>>>>>>' not in text
+          path.write_text(text)
+          PY
+          git add "$file"
+          test -z "$(git diff --name-only --diff-filter=U)"
+
+          expected=$(cat <<'EOF'
+          src/composables/node/useNodeDragAndDrop.test.ts
+          src/composables/node/useNodeDragAndDrop.ts
+          src/composables/usePaste.test.ts
+          src/composables/usePaste.ts
+          src/renderer/extensions/vueNodes/components/LGraphNode.test.ts
+          src/renderer/extensions/vueNodes/components/LGraphNode.vue
+          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts
+          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts
+          src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts
+          src/scripts/app.test.ts
+          src/scripts/app.ts
+          src/utils/__tests__/eventUtils.test.ts
+          src/utils/eventUtils.ts
+          src/utils/mediaUploadUtil.ts
+          src/workbench/extensions/agent/AgentPanelRoot.test.ts
+          src/workbench/extensions/agent/AgentPanelRoot.vue
+          EOF
+          )
+          actual=$(git diff --cached --name-only "$base" | sort)
+          diff -u <(printf '%s\n' "$expected" | sort) <(printf '%s\n' "$actual")
+          test "$(printf '%s\n' "$actual" | sed '/^$/d' | wc -l)" -eq 16
+          git diff --cached "$base" --check
+
+      - name: Setup frontend
+        uses: ./.github/actions/setup-frontend
+
+      - name: Run targeted and adjacent Vitest suite
+        shell: bash
+        run: |
+          pnpm exec vitest run \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/usePaste.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.test.ts \
+            src/scripts/app.test.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.test.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
+            src/workbench/extensions/agent/composables/agent/useAttachment.test.ts
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Oxlint audit
+        run: pnpm oxlint:audit
+
+      - name: ESLint changed files
+        shell: bash
+        run: |
+          pnpm exec eslint \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/node/useNodeDragAndDrop.ts \
+            src/composables/usePaste.test.ts \
+            src/composables/usePaste.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.ts \
+            src/utils/mediaUploadUtil.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.vue
+
+      - name: Knip
+        run: pnpm knip
+
+      - name: Format changed files
+        shell: bash
+        run: |
+          pnpm exec oxfmt --check \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/composables/node/useNodeDragAndDrop.ts \
+            src/composables/usePaste.test.ts \
+            src/composables/usePaste.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
+            src/scripts/app.test.ts \
+            src/scripts/app.ts \
+            src/utils/__tests__/eventUtils.test.ts \
+            src/utils/eventUtils.ts \
+            src/utils/mediaUploadUtil.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
+            src/workbench/extensions/agent/AgentPanelRoot.vue
+
+      - name: Commit hygiene checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec tsx scripts/check-unused-i18n-keys.ts
+          pnpm exec tsx scripts/check-frozen-dirs.ts
+          git diff --quiet
+          git diff --cached 14ba4d588081bbe799432523008944b13d19d1d9 --check
+
+      - name: Build one-commit candidate and publish mirror
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=14ba4d588081bbe799432523008944b13d19d1d9
+          old_mirror=bae97a7c3cf5d53533ccc0f5dd4fb0e0a21d4455
+          mirror=mirror/pr10841-reconcile-20260917
+
+          git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
+          git fetch --no-tags upstream main
+          test "$(git rev-parse upstream/main)" = "$base"
+
+          expected=$(cat <<'EOF'
+          src/composables/node/useNodeDragAndDrop.test.ts
+          src/composables/node/useNodeDragAndDrop.ts
+          src/composables/usePaste.test.ts
+          src/composables/usePaste.ts
+          src/renderer/extensions/vueNodes/components/LGraphNode.test.ts
+          src/renderer/extensions/vueNodes/components/LGraphNode.vue
+          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts
+          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts
+          src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts
+          src/scripts/app.test.ts
+          src/scripts/app.ts
+          src/utils/__tests__/eventUtils.test.ts
+          src/utils/eventUtils.ts
+          src/utils/mediaUploadUtil.ts
+          src/workbench/extensions/agent/AgentPanelRoot.test.ts
+          src/workbench/extensions/agent/AgentPanelRoot.vue
+          EOF
+          )
+
+          tree=$(git write-tree)
+          candidate=$(printf '%s\n' 'fix: restore Vue upload-node file drops' | git commit-tree "$tree" -p "$base")
+          test "$(git rev-parse "$candidate^")" = "$base"
+          test "$(git rev-list --count "$base..$candidate")" -eq 1
+          actual=$(git diff --name-only "$base" "$candidate" | sort)
+          diff -u <(printf '%s\n' "$expected" | sort) <(printf '%s\n' "$actual")
+          test "$(printf '%s\n' "$actual" | sed '/^$/d' | wc -l)" -eq 16
+          git diff "$base" "$candidate" --check
+
+          remote_mirror=$(git ls-remote origin "refs/heads/$mirror" | cut -f1)
+          test "$remote_mirror" = "$old_mirror"
+          git push \
+            --force-with-lease="refs/heads/$mirror:$old_mirror" \
+            origin "$candidate:refs/heads/$mirror"
+          promoted=$(git ls-remote origin "refs/heads/$mirror" | cut -f1)
+          test "$promoted" = "$candidate"
+          echo "candidate=$candidate"
