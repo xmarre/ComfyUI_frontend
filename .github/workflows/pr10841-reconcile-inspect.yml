@@ -27,6 +27,9 @@ jobs:
 
           git config user.name xmarre
           git config user.email 54859656+xmarre@users.noreply.github.com
+          git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
+          git fetch --no-tags upstream main
+          test "$(git rev-parse upstream/main)" = "$base"
           git fetch origin "refs/heads/$checkpoint:refs/remotes/origin/pr10841-checkpoint"
           test "$(git rev-parse refs/remotes/origin/pr10841-checkpoint)" = "$old_head"
           git checkout --detach "$base"
@@ -36,9 +39,7 @@ jobs:
           merge_rc=$?
           set -e
           test "$merge_rc" -eq 1
-
-          unresolved=$(git diff --name-only --diff-filter=U)
-          test "$unresolved" = "src/workbench/extensions/agent/AgentPanelRoot.test.ts"
+          test "$(git diff --name-only --diff-filter=U)" = "src/workbench/extensions/agent/AgentPanelRoot.test.ts"
 
           file=src/workbench/extensions/agent/AgentPanelRoot.test.ts
           git checkout --conflict=merge -- "$file"
@@ -47,16 +48,13 @@ jobs:
 
           path = Path('src/workbench/extensions/agent/AgentPanelRoot.test.ts')
           text = path.read_text()
-          anchor_text = "    const asset = new File(['x'], 'cat.png', { type: 'image/png' })\n"
-          anchor = text.index(anchor_text)
+          anchor = text.index("    const asset = new File(['x'], 'cat.png', { type: 'image/png' })\n")
           start = text.index('<<<<<<< ours\n', anchor)
           separator = text.index('=======\n', start)
           end_marker = text.index('>>>>>>> theirs\n', separator)
           end = end_marker + len('>>>>>>> theirs\n')
-
           ours = text[start + len('<<<<<<< ours\n'):separator]
           theirs = text[separator + len('=======\n'):end_marker]
-
           expected_ours = """    expect(dispatchDrag(target, 'drop', { files: [asset] })).toBe(true)
               expect(
                 within(await screen.findByTestId('composer-asset-section')).getByText(
@@ -71,7 +69,6 @@ jobs:
           """
           assert ours == expected_ours, repr(ours)
           assert theirs == expected_theirs, repr(theirs)
-
           replacement = """    const assetDrop = dispatchDragEvent(target, 'drop', { files: [asset] })
               expect(assetDrop.defaultPrevented).toBe(true)
               expect(isDropEventHandled(assetDrop)).toBe(true)
@@ -82,14 +79,13 @@ jobs:
               ).toBeInTheDocument()
           """
           text = text[:start] + replacement + text[end:]
-          assert '<<<<<<<' not in text
-          assert '>>>>>>>' not in text
+          assert '<<<<<<<' not in text and '>>>>>>>' not in text
           path.write_text(text)
           PY
           git add "$file"
           test -z "$(git diff --name-only --diff-filter=U)"
 
-          expected=$(cat <<'EOF'
+          cat > /tmp/expected-pr10841-files <<'EOF'
           src/composables/node/useNodeDragAndDrop.test.ts
           src/composables/node/useNodeDragAndDrop.ts
           src/composables/usePaste.test.ts
@@ -107,10 +103,10 @@ jobs:
           src/workbench/extensions/agent/AgentPanelRoot.test.ts
           src/workbench/extensions/agent/AgentPanelRoot.vue
           EOF
-          )
-          actual=$(git diff --cached --name-only "$base" | sort)
-          diff -u <(printf '%s\n' "$expected" | sort) <(printf '%s\n' "$actual")
-          test "$(printf '%s\n' "$actual" | sed '/^$/d' | wc -l)" -eq 16
+          sort -o /tmp/expected-pr10841-files /tmp/expected-pr10841-files
+          git diff --cached --name-only "$base" | sort > /tmp/actual-pr10841-files
+          diff -u /tmp/expected-pr10841-files /tmp/actual-pr10841-files
+          test "$(wc -l < /tmp/actual-pr10841-files)" -eq 16
           git diff --cached "$base" --check
 
       - name: Setup frontend
@@ -140,23 +136,7 @@ jobs:
       - name: ESLint changed files
         shell: bash
         run: |
-          pnpm exec eslint \
-            src/composables/node/useNodeDragAndDrop.test.ts \
-            src/composables/node/useNodeDragAndDrop.ts \
-            src/composables/usePaste.test.ts \
-            src/composables/usePaste.ts \
-            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
-            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
-            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
-            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
-            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
-            src/scripts/app.test.ts \
-            src/scripts/app.ts \
-            src/utils/__tests__/eventUtils.test.ts \
-            src/utils/eventUtils.ts \
-            src/utils/mediaUploadUtil.ts \
-            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
-            src/workbench/extensions/agent/AgentPanelRoot.vue
+          xargs pnpm exec eslint < /tmp/expected-pr10841-files
 
       - name: Knip
         run: pnpm knip
@@ -164,23 +144,7 @@ jobs:
       - name: Format changed files
         shell: bash
         run: |
-          pnpm exec oxfmt --check \
-            src/composables/node/useNodeDragAndDrop.test.ts \
-            src/composables/node/useNodeDragAndDrop.ts \
-            src/composables/usePaste.test.ts \
-            src/composables/usePaste.ts \
-            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
-            src/renderer/extensions/vueNodes/components/LGraphNode.vue \
-            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
-            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts \
-            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts \
-            src/scripts/app.test.ts \
-            src/scripts/app.ts \
-            src/utils/__tests__/eventUtils.test.ts \
-            src/utils/eventUtils.ts \
-            src/utils/mediaUploadUtil.ts \
-            src/workbench/extensions/agent/AgentPanelRoot.test.ts \
-            src/workbench/extensions/agent/AgentPanelRoot.vue
+          xargs pnpm exec oxfmt --check < /tmp/expected-pr10841-files
 
       - name: Commit hygiene checks
         shell: bash
@@ -199,37 +163,15 @@ jobs:
           old_mirror=4293246a08dd4d18a680ef623f8e2e74c10eb620
           mirror=mirror/pr10841-reconcile-20260917
 
-          git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git
           git fetch --no-tags upstream main
           test "$(git rev-parse upstream/main)" = "$base"
-
-          expected=$(cat <<'EOF'
-          src/composables/node/useNodeDragAndDrop.test.ts
-          src/composables/node/useNodeDragAndDrop.ts
-          src/composables/usePaste.test.ts
-          src/composables/usePaste.ts
-          src/renderer/extensions/vueNodes/components/LGraphNode.test.ts
-          src/renderer/extensions/vueNodes/components/LGraphNode.vue
-          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts
-          src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.ts
-          src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.ts
-          src/scripts/app.test.ts
-          src/scripts/app.ts
-          src/utils/__tests__/eventUtils.test.ts
-          src/utils/eventUtils.ts
-          src/utils/mediaUploadUtil.ts
-          src/workbench/extensions/agent/AgentPanelRoot.test.ts
-          src/workbench/extensions/agent/AgentPanelRoot.vue
-          EOF
-          )
-
           tree=$(git write-tree)
           candidate=$(printf '%s\n' 'fix: restore Vue upload-node file drops' | git commit-tree "$tree" -p "$base")
           test "$(git rev-parse "$candidate^")" = "$base"
           test "$(git rev-list --count "$base..$candidate")" -eq 1
-          actual=$(git diff --name-only "$base" "$candidate" | sort)
-          diff -u <(printf '%s\n' "$expected" | sort) <(printf '%s\n' "$actual")
-          test "$(printf '%s\n' "$actual" | sed '/^$/d' | wc -l)" -eq 16
+          git diff --name-only "$base" "$candidate" | sort > /tmp/candidate-pr10841-files
+          diff -u /tmp/expected-pr10841-files /tmp/candidate-pr10841-files
+          test "$(wc -l < /tmp/candidate-pr10841-files)" -eq 16
           git diff "$base" "$candidate" --check
 
           remote_mirror=$(git ls-remote origin "refs/heads/$mirror" | cut -f1)
@@ -237,6 +179,5 @@ jobs:
           git push \
             --force-with-lease="refs/heads/$mirror:$old_mirror" \
             origin "$candidate:refs/heads/$mirror"
-          promoted=$(git ls-remote origin "refs/heads/$mirror" | cut -f1)
-          test "$promoted" = "$candidate"
+          test "$(git ls-remote origin "refs/heads/$mirror" | cut -f1)" = "$candidate"
           echo "candidate=$candidate"
