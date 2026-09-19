@@ -65,10 +65,10 @@ import {
 import type { FlattenableWorkflowNode } from '@/platform/workflow/core/utils/workflowFlattening'
 import type {
   ExecutionErrorWsMessage,
+  NodeError,
   NodeExecutionOutput,
   ResultItem
-} from '@/platform/remote/comfyui/execution/types'
-import type { NodeError } from '@/platform/remote/comfyui/types'
+} from '@/schemas/apiSchema'
 import { isComboInputSpecV1, isComboInputSpecV2 } from '@/schemas/nodeDefSchema'
 import type { ComfyNodeDef as ComfyNodeDefV1 } from '@/schemas/nodeDefSchema'
 import { ComponentWidgetImpl, DOMWidgetImpl } from '@/scripts/domWidget'
@@ -121,8 +121,6 @@ import {
 } from '@/platform/missingModel/missingModelPipeline'
 import type { MissingModelPipelineResult } from '@/platform/missingModel/missingModelPipeline'
 import { useMissingModelStore } from '@/platform/missingModel/missingModelStore'
-import type { MissingModelCandidate } from '@/platform/missingModel/types'
-import type { MissingMediaCandidate } from '@/platform/missingMedia/types'
 import { runMissingMediaPipeline } from '@/platform/missingMedia/missingMediaPipeline'
 import { useMissingMediaStore } from '@/platform/missingMedia/missingMediaStore'
 
@@ -167,6 +165,7 @@ import {
   hasAudioType,
   hasImageType,
   hasVideoType,
+  isDropEventHandled,
   isMediaFile
 } from '@/utils/eventUtils'
 import { getWorkflowDataFromFile } from '@/scripts/metadata/parser'
@@ -362,7 +361,10 @@ export class ComfyApp {
   }
 
   canvas!: LGraphCanvas
-  dragOverNode: Pick<LGraphNode, 'onDragDrop' | 'id'> | null = null
+  dragOverNode:
+    | (Pick<LGraphNode, 'onDragDrop' | 'id'> &
+        Partial<Pick<LGraphNode, 'onDragOver'>>)
+    | null = null
   readonly canvasElRef = shallowRef<HTMLCanvasElement>()
   get canvasEl() {
     // TODO: Fix possibly undefined reference
@@ -407,7 +409,7 @@ export class ComfyApp {
   /**
    * @deprecated Use useExecutionStore().executingNodeId instead
    * TODO: Update to support multiple executing nodes. This getter returns only the first executing node.
-   * Consider updating consumers to handle multiple nodes or use executingNodeIds array.
+   * Consider updating consumers to handle multiple executing nodes or use executingNodeIds array.
    */
   get runningNodeId(): SerializedNodeId | null {
     return useExecutionStore().executingNodeId
@@ -711,78 +713,114 @@ export class ComfyApp {
     }
   }
 
+  async handleFileDrop(
+    event: DragEvent,
+    { skipNodeRouting = false }: { skipNodeRouting?: boolean } = {}
+  ): Promise<void> {
+    try {
+      if (!skipNodeRouting) {
+        const target = event.target
+        const isGraphCanvasDrop =
+          target instanceof Node && this.canvasContainer.contains(target)
+
+        if (isDropEventHandled(event)) return
+
+        // Vue-node drops may already be defaultPrevented before bubbling here.
+        // Only skip already-handled drops outside the graph canvas area.
+        if (event.defaultPrevented && !isGraphCanvasDrop) return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+
+      const previousDragOverNode = this.dragOverNode
+
+      // graph_mouse is only updated on mousemove, so when files are dragged
+      // in from another window the canvas-space cursor is stale. Sync it
+      // from the drop event so nodes created below land at the cursor.
+      this.canvas.adjustMouseEvent(event)
+      this.canvas.graph_mouse[0] = event.canvasX
+      this.canvas.graph_mouse[1] = event.canvasY
+
+      this.dragOverNode = null
+      if (previousDragOverNode) {
+        this.canvas.setDirty(false, true)
+      }
+
+      if (!skipNodeRouting) {
+        const nodeAtDropPosition = this.canvas.graph?.getNodeOnPos(
+          event.canvasX,
+          event.canvasY
+        )
+        const canUsePreviousDragOverNode =
+          previousDragOverNode &&
+          (previousDragOverNode.onDragOver?.(event) ?? true)
+        const dropNode = canUsePreviousDragOverNode
+          ? previousDragOverNode
+          : nodeAtDropPosition?.onDragOver?.(event) === true
+            ? nodeAtDropPosition
+            : null
+
+        // Node handles file drop, we dont use the built in onDropFile handler as its buggy
+        // If you drag multiple files it will call it multiple times with the same file
+        if (await dropNode?.onDragDrop?.(event)) return
+      }
+
+      const files = await extractFilesFromDragEvent(event)
+      if (files.length === 0) return
+
+      const workspace = useWorkspaceStore()
+      try {
+        workspace.spinner = true
+        const imageFiles = files.filter(hasImageType)
+        const audioFiles = files.filter(hasAudioType)
+        const videoFiles = files.filter(hasVideoType)
+        const totalMedia =
+          imageFiles.length + audioFiles.length + videoFiles.length
+        const hasMultipleMedia = totalMedia > 1
+
+        const createdNodes: LGraphNode[] = []
+        const handleFileOptions = {
+          deferWarnings: true,
+          onNodeCreated: (node: LGraphNode) => createdNodes.push(node)
+        }
+
+        if (hasMultipleMedia) {
+          if (imageFiles.length > 0) {
+            await this.handleFileList(imageFiles)
+          }
+          if (audioFiles.length > 0) {
+            await this.handleAudioFileList(audioFiles)
+          }
+          if (videoFiles.length > 0) {
+            await this.handleVideoFileList(videoFiles)
+          }
+          for (const file of files.filter((f) => !isMediaFile(f))) {
+            await this.handleFile(file, 'file_drop', handleFileOptions)
+          }
+        } else {
+          for (const file of files) {
+            await this.handleFile(file, 'file_drop', handleFileOptions)
+          }
+        }
+
+        this.positionNodes(createdNodes)
+      } finally {
+        workspace.spinner = false
+      }
+      useWorkflowService().showPendingWarnings()
+    } catch (error: unknown) {
+      useToastStore().addAlert(t('toastMessages.dropFileError', { error }))
+    }
+  }
+
   /**
    * Adds a handler allowing drag+drop of files onto the window to load workflows
    */
   private addDropHandler() {
     // Get prompt from dropped PNG or json
     useEventListener(document, 'drop', async (event: DragEvent) => {
-      try {
-        // Skip if already handled (e.g. file drop onto publish dialog tiles)
-        if (event.defaultPrevented) return
-
-        event.preventDefault()
-        event.stopPropagation()
-
-        // graph_mouse is only updated on mousemove, so when files are dragged
-        // in from another window the canvas-space cursor is stale. Sync it
-        // from the drop event so nodes created below land at the cursor.
-        this.canvas.adjustMouseEvent(event)
-        this.canvas.graph_mouse[0] = event.canvasX
-        this.canvas.graph_mouse[1] = event.canvasY
-
-        const n = this.dragOverNode
-        this.dragOverNode = null
-        // Node handles file drop, we dont use the built in onDropFile handler as its buggy
-        // If you drag multiple files it will call it multiple times with the same file
-        if (await n?.onDragDrop?.(event)) return
-
-        const files = await extractFilesFromDragEvent(event)
-        if (files.length === 0) return
-
-        const workspace = useWorkspaceStore()
-        try {
-          workspace.spinner = true
-          const imageFiles = files.filter(hasImageType)
-          const audioFiles = files.filter(hasAudioType)
-          const videoFiles = files.filter(hasVideoType)
-          const totalMedia =
-            imageFiles.length + audioFiles.length + videoFiles.length
-          const hasMultipleMedia = totalMedia > 1
-
-          const createdNodes: LGraphNode[] = []
-          const handleFileOptions = {
-            deferWarnings: true,
-            onNodeCreated: (node: LGraphNode) => createdNodes.push(node)
-          }
-
-          if (hasMultipleMedia) {
-            if (imageFiles.length > 0) {
-              await this.handleFileList(imageFiles)
-            }
-            if (audioFiles.length > 0) {
-              await this.handleAudioFileList(audioFiles)
-            }
-            if (videoFiles.length > 0) {
-              await this.handleVideoFileList(videoFiles)
-            }
-            for (const file of files.filter((f) => !isMediaFile(f))) {
-              await this.handleFile(file, 'file_drop', handleFileOptions)
-            }
-          } else {
-            for (const file of files) {
-              await this.handleFile(file, 'file_drop', handleFileOptions)
-            }
-          }
-
-          this.positionNodes(createdNodes)
-        } finally {
-          workspace.spinner = false
-        }
-        useWorkflowService().showPendingWarnings()
-      } catch (error: unknown) {
-        useToastStore().addAlert(t('toastMessages.dropFileError', { error }))
-      }
+      await this.handleFileDrop(event)
     })
 
     // Always clear over node on drag leave
@@ -840,7 +878,7 @@ export class ComfyApp {
           keybinding &&
           keybinding.targetElementId === 'graph-canvas-container'
         ) {
-          void useCommandStore().execute(keybinding.commandId)
+          useCommandStore().execute(keybinding.commandId)
 
           this.graph.change()
           e.preventDefault()
@@ -928,7 +966,7 @@ export class ComfyApp {
       void useNodeReplacementStore().load()
     })
 
-    void api.init()
+    api.init()
   }
 
   /** Flag that the graph is configuring to prevent nodes from running checks while its still loading */
@@ -1290,7 +1328,6 @@ export class ComfyApp {
     } = options
     useWorkflowService().beforeLoadNewGraph(clean)
     await useExtensionService().invokeExtensionsAsync('beforeLoadGraph')
-    useExecutionErrorStore().setActiveGraph(null)
 
     if (skipAssetScans) {
       // Only reset candidates; preserve UI state (fileSizes, etc.)
@@ -1463,8 +1500,6 @@ export class ComfyApp {
 
     ChangeTracker.isLoadingGraph = true
     let activatedWorkflow: LoadedComfyWorkflow | undefined
-    let reconcileResourceErrors: (() => void) | undefined
-    let resourceScanLoadCompleted = false
     try {
       try {
         // @ts-expect-error Discrepancies between zod and litegraph - in progress
@@ -1606,37 +1641,17 @@ export class ComfyApp {
       )
 
       if (!skipAssetScans) {
-        const errorStore = useExecutionErrorStore()
-        const resourceScanKey = errorStore.captureRunErrorKey()
-        let models: MissingModelCandidate[] | undefined
-        let media: MissingMediaCandidate[] | undefined
-        const reconcile = () => {
-          if (!resourceScanLoadCompleted || (!models && !media)) return
-          errorStore.retireResolvedMissingResourceErrors(
-            { models, media },
-            resourceScanKey
-          )
-        }
-        reconcileResourceErrors = reconcile
         await runMissingModelPipeline({
           graph: this.rootGraph,
           graphData,
           missingModelStore: useMissingModelStore(),
           missingNodeTypes: activeMissingNodeTypes,
-          silent: silentAssetErrors,
-          onVerified: (candidates) => {
-            models = candidates
-            reconcile()
-          }
+          silent: silentAssetErrors
         })
 
         await runMissingMediaPipeline({
           rootGraph: this.rootGraph,
-          silent: silentAssetErrors,
-          onVerified: (candidates) => {
-            media = candidates
-            reconcile()
-          }
+          silent: silentAssetErrors
         })
       }
 
@@ -1645,7 +1660,6 @@ export class ComfyApp {
           silent: silentAssetErrors
         })
       }
-      resourceScanLoadCompleted = true
 
       requestAnimationFrame(() => {
         this.canvas.setDirty(true, true)
@@ -1658,9 +1672,6 @@ export class ComfyApp {
         workflowNavigationId
       )
       ChangeTracker.isLoadingGraph = false
-      // The retirement watcher skips transitions made during the load.
-      useExecutionErrorStore().retireResolvedMissingNodePromptError()
-      reconcileResourceErrors?.()
     }
   }
 
@@ -2088,9 +2099,13 @@ export class ComfyApp {
         video: ['LoadVideo', pasteVideoNode]
       }
 
-      const mediaType = Object.keys(mediaNodeTypes).find((t) =>
-        file.type.startsWith(t)
-      )
+      const mediaType: keyof typeof mediaNodeTypes | null = hasImageType(file)
+        ? 'image'
+        : hasAudioType(file)
+          ? 'audio'
+          : hasVideoType(file)
+            ? 'video'
+            : null
       if (mediaType) {
         const [nodeType, pasteFn] = mediaNodeTypes[mediaType]
         const transfer = new DataTransfer()
@@ -2255,7 +2270,7 @@ export class ComfyApp {
    */
   async handleFileList(fileList: File[]) {
     if (fileList.length === 0) return
-    if (!fileList[0].type.startsWith('image')) return
+    if (!hasImageType(fileList[0])) return
 
     const imageNodes = await pasteImageNodes(this.canvas, fileList)
     if (imageNodes.length === 0) return
@@ -2544,7 +2559,7 @@ export class ComfyApp {
   /**
    * Collects context menu items from all extensions for canvas menus
    * @param canvas The canvas instance
-   * @returns Array of context menu items from all extensions
+   * @returns Array of context menu items
    */
   collectCanvasMenuItems(canvas: LGraphCanvas): IContextMenuValue[] {
     return useExtensionService()
@@ -2555,7 +2570,7 @@ export class ComfyApp {
   /**
    * Collects context menu items from all extensions for node menus
    * @param node The node being right-clicked
-   * @returns Array of context menu items from all extensions
+   * @returns Array of context menu items
    */
   collectNodeMenuItems(node: LGraphNode): IContextMenuValue[] {
     return useExtensionService()
@@ -2569,7 +2584,7 @@ export class ComfyApp {
   async reloadNodeDefs() {
     const defs = await this.getNodeDefs()
     for (const nodeId in defs) {
-      await this.registerNodeDef(nodeId, defs[nodeId])
+      this.registerNodeDef(nodeId, defs[nodeId])
     }
     // Refresh combo widgets in all nodes including those in subgraphs
     const nodeOutputStore = useNodeOutputStore()

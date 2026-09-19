@@ -13,9 +13,9 @@ import { computed, defineComponent, h, nextTick, ref } from 'vue'
 import { useClipboard } from '@vueuse/core'
 
 vi.mock(import('firebase/auth'))
+vi.mock(import('vuefire'), () => ({ useFirebaseAuth: vi.fn() }))
 
 import { i18n } from '@/i18n'
-import { useCurrentUser } from '@/composables/auth/useCurrentUser'
 import { useAgentConsentStore } from '@/workbench/extensions/agent/stores/agent/agentConsentStore'
 import { setupInlinePromptEditorDom } from './components/agent/composer/inlinePromptEditorTestSetup'
 
@@ -37,6 +37,7 @@ import { useWorkflowTabActivityStore } from '@/stores/workflowTabActivityStore'
 import { useSidebarTabStore } from '@/stores/workspace/sidebarTabStore'
 import { useToastStore } from '@/platform/updates/common/toastStore'
 import { useAssetsStore } from '@/stores/assetsStore'
+import { isDropEventHandled } from '@/utils/eventUtils'
 import { getFilenameDetails } from '@/utils/formatUtil'
 import { useWorkflowStore } from '@/platform/workflow/management/stores/workflowStore'
 import type { LoadedComfyWorkflow } from '@/platform/workflow/management/stores/workflowStore'
@@ -189,9 +190,13 @@ vi.mock<unknown>(import('@/utils/litegraphUtil'), () => ({
     (item as { isNodeFake?: boolean } | null)?.isNodeFake === true
 }))
 
-import { useTeamWorkspaceStore } from '@/platform/workspace/stores/teamWorkspaceStore'
-
-vi.mock(import('@/composables/auth/useCurrentUser'))
+vi.mock<unknown>(import('@/composables/auth/useCurrentUser'), () => ({
+  useCurrentUser: () => ({
+    isLoggedIn: { value: true },
+    userDisplayName: { value: 'Jo Rivera' },
+    resolvedUserInfo: { value: { id: 'account-a' } }
+  })
+}))
 
 const clipboard = vi.hoisted(() => ({ copy: vi.fn() }))
 
@@ -256,11 +261,6 @@ import { useAgentWorkflowTabBindingStore } from './stores/agent/agentWorkflowTab
 import AgentPanelRoot from './AgentPanelRoot.vue'
 
 beforeEach(() => {
-  useCurrentUser().isLoggedIn = computed(() => true)
-  useCurrentUser().userDisplayName = computed(() => 'Jo Rivera')
-  useCurrentUser().resolvedUserInfo = computed(() => ({
-    id: 'account-a'
-  }))
   Object.assign(useAgentConsentStore(), { accepted: true })
   vi.mocked(validateComfyWorkflow).mockImplementation(async (content) =>
     fromPartial<ComfyWorkflowJSON>(
@@ -285,13 +285,15 @@ beforeEach(() => {
       tier: computed(() => paywallBilling.tier)
     })
   )
-  useBillingCapabilities().canTopUp = computed(
-    () => paywallCapabilities.canTopUp
+  vi.mocked(useBillingCapabilities).mockReturnValue(
+    fromPartial({
+      canTopUp: computed(() => paywallCapabilities.canTopUp),
+      canSubscribeSelfServe: computed(
+        () => paywallCapabilities.canSubscribeSelfServe
+      ),
+      isReady: computed(() => paywallCapabilities.isReady)
+    })
   )
-  useBillingCapabilities().canSubscribeSelfServe = computed(
-    () => paywallCapabilities.canSubscribeSelfServe
-  )
-  useBillingCapabilities().isReady = computed(() => paywallCapabilities.isReady)
   workflowStore = useWorkflowStore()
   canvasStore = useCanvasStore()
   executionErrors = vi.mocked(useExecutionErrorStore())
@@ -450,34 +452,26 @@ describe('AgentPanelRoot first-use experience', () => {
 })
 
 describe('AgentPanelRoot onboarding', () => {
-  const SCOPED_KEY = 'Comfy.AgentPanel.onboarded.account-a.workspace-a'
-
-  beforeEach(() => {
-    Object.assign(useTeamWorkspaceStore(), {
-      activeWorkspaceId: 'workspace-a'
-    })
-    localStorage.removeItem('Comfy.AgentPanel.onboarded')
-    localStorage.removeItem(SCOPED_KEY)
-  })
-
   it('defers the tour in App Mode without completing it or blocking the composer', async () => {
+    localStorage.removeItem('Comfy.AgentPanel.onboarded')
     canvasStore.linearMode = true
     render(AgentPanelRoot, { global: { plugins: [i18n] } })
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     await userEvent.type(screen.getByRole('textbox'), 'Explain this app')
     expect(screen.getByRole('textbox')).toHaveTextContent('Explain this app')
-    expect(localStorage.getItem(SCOPED_KEY)).not.toBe('true')
+    expect(localStorage.getItem('Comfy.AgentPanel.onboarded')).not.toBe('true')
     expect(canvasStore.linearMode).toBe(true)
 
     canvasStore.linearMode = false
     expect(
       await screen.findByRole('dialog', { name: 'Meet your Comfy Agent' })
     ).toBeInTheDocument()
-    expect(localStorage.getItem(SCOPED_KEY)).not.toBe('true')
+    expect(localStorage.getItem('Comfy.AgentPanel.onboarded')).not.toBe('true')
   })
 
   it('walks through the four cards and leaves the composer usable after Done', async () => {
+    localStorage.removeItem('Comfy.AgentPanel.onboarded')
     render(
       defineComponent({
         setup: () => () =>
@@ -526,26 +520,10 @@ describe('AgentPanelRoot onboarding', () => {
     }
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(localStorage.getItem(SCOPED_KEY)).toBe('true')
+    expect(localStorage.getItem('Comfy.AgentPanel.onboarded')).toBe('true')
     const composer = screen.getByRole('textbox')
     await userEvent.click(composer)
     expect(composer).toHaveFocus()
-  })
-
-  it('preserves legacy tour completion when the panel mounts again', async () => {
-    localStorage.setItem('Comfy.AgentPanel.onboarded', 'true')
-    const panel = render(AgentPanelRoot, { global: { plugins: [i18n] } })
-
-    expect(await screen.findByRole('textbox')).toBeInTheDocument()
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(localStorage.getItem(SCOPED_KEY)).toBe('true')
-    expect(localStorage.getItem('Comfy.AgentPanel.onboarded')).toBeNull()
-
-    panel.unmount()
-    render(AgentPanelRoot, { global: { plugins: [i18n] } })
-
-    expect(await screen.findByRole('textbox')).toBeInTheDocument()
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })
 
@@ -745,11 +723,11 @@ describe('AgentPanelRoot session notices', () => {
 // marker the panel tests for, so the payload is hand-built.
 // Returns whether the panel claimed the event, which is what the graph loader
 // checks before opening a dropped workflow.
-function dispatchDrag(
+function dispatchDragEvent(
   target: Element,
   type: 'dragenter' | 'dragleave' | 'dragover' | 'drop',
   data: { files?: File[]; types?: string[]; getData?: (t: string) => string }
-): boolean {
+): DragEvent {
   const event = new Event(type, { bubbles: true, cancelable: true })
   Object.defineProperty(event, 'dataTransfer', {
     value: {
@@ -759,7 +737,15 @@ function dispatchDrag(
     }
   })
   target.dispatchEvent(event)
-  return event.defaultPrevented
+  return event as DragEvent
+}
+
+function dispatchDrag(
+  target: Element,
+  type: 'dragenter' | 'dragleave' | 'dragover' | 'drop',
+  data: { files?: File[]; types?: string[]; getData?: (t: string) => string }
+): boolean {
+  return dispatchDragEvent(target, type, data).defaultPrevented
 }
 
 function fileOfSize(name: string, size: number, type: string): File {
@@ -1427,7 +1413,9 @@ describe('AgentPanelRoot attach flow', () => {
           })
       }
 
-      expect(dispatchDrag(target, 'drop', dragData)).toBe(true)
+      const firstDrop = dispatchDragEvent(target, 'drop', dragData)
+      expect(firstDrop.defaultPrevented).toBe(true)
+      expect(isDropEventHandled(firstDrop)).toBe(true)
       expect(dispatchDrag(target, 'drop', dragData)).toBe(true)
       expect(
         within(await screen.findByTestId('composer-asset-section')).getByText(
@@ -1524,7 +1512,9 @@ describe('AgentPanelRoot attach flow', () => {
     expect(screen.queryByText('flow.json')).not.toBeInTheDocument()
 
     const asset = new File(['x'], 'cat.png', { type: 'image/png' })
-    expect(dispatchDrag(target, 'drop', { files: [asset] })).toBe(true)
+    const assetDrop = dispatchDragEvent(target, 'drop', { files: [asset] })
+    expect(assetDrop.defaultPrevented).toBe(true)
+    expect(isDropEventHandled(assetDrop)).toBe(true)
     expect(
       within(await screen.findByTestId('composer-asset-section')).getByText(
         'cat.png'

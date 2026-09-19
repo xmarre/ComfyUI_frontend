@@ -17,6 +17,10 @@ import type { useExtensionService } from '@/services/extensionService'
 import { t } from '@/i18n'
 import { LGraph, LGraphNode, LiteGraph } from '@/lib/litegraph/src/litegraph'
 import type { LGraphCanvas } from '@/lib/litegraph/src/litegraph'
+import type {
+  CanvasPointerEvent,
+  CanvasPointerExtensions
+} from '@/lib/litegraph/src/types/events'
 import type { SerialisableGraph } from '@/lib/litegraph/src/types/serialisation'
 import type {
   ComfyApiWorkflow,
@@ -31,8 +35,7 @@ import { useWorkflowService } from '@/platform/workflow/core/services/workflowSe
 import { createMockChangeTracker } from '@/utils/__tests__/litegraphTestUtils'
 import { useNodeReplacementStore } from '@/platform/nodeReplacement/nodeReplacementStore'
 import type { NodeReplacement } from '@/platform/nodeReplacement/types'
-import type { NodeExecutionOutput } from '@/platform/remote/comfyui/execution/types'
-import type { NodeError } from '@/platform/remote/comfyui/types'
+import type { NodeExecutionOutput, NodeError } from '@/schemas/apiSchema'
 import { ComfyApp, app as singletonApp } from './app'
 import { createNode } from '@/utils/litegraphUtil'
 import {
@@ -45,14 +48,6 @@ import {
 } from '@/composables/usePaste'
 import Load3dUtils from '@/extensions/core/load3d/Load3dUtils'
 import { getWorkflowDataFromFile } from '@/scripts/metadata/parser'
-import { runMissingModelPipeline } from '@/platform/missingModel/missingModelPipeline'
-import * as missingMediaPipeline from '@/platform/missingMedia/missingMediaPipeline'
-import * as missingMediaScan from '@/platform/missingMedia/missingMediaScan'
-import { useMissingMediaStore } from '@/platform/missingMedia/missingMediaStore'
-import type { MissingMediaCandidate } from '@/platform/missingMedia/types'
-import { createMissingMediaCandidate } from '@/platform/missingMedia/__fixtures__/promotedMedia'
-import type { MissingModelCandidate } from '@/platform/missingModel/types'
-import { nodeError, validationError } from '@/utils/__tests__/nodeErrorHelpers'
 import { useMissingModelStore } from '@/platform/missingModel/missingModelStore'
 import { useMissingNodesErrorStore } from '@/platform/nodeReplacement/missingNodesErrorStore'
 import { installErrorClearingHooks } from '@/composables/graph/useErrorClearingHooks'
@@ -67,14 +62,17 @@ import { useExecutionStore } from '@/stores/executionStore'
 import { useDialogStore } from '@/stores/dialogStore'
 import type { ComfyNodeDef } from '@/schemas/nodeDefSchema'
 import { createNodeExecutionId } from '@/types/nodeIdentification'
-import { toNodeId } from '@/types/nodeId'
+import { UNASSIGNED_NODE_ID, toNodeId } from '@/types/nodeId'
 import {
   createTestRootGraph,
   createTestSubgraph,
   createTestSubgraphNode
 } from '@/lib/litegraph/src/subgraph/__fixtures__/subgraphHelpers'
 import { useWidgetValueStore } from '@/stores/widgetValueStore'
-import { extractFilesFromDragEvent } from '@/utils/eventUtils'
+import {
+  extractFilesFromDragEvent,
+  markDropEventHandled
+} from '@/utils/eventUtils'
 import { zeroUuid } from '@/utils/uuid'
 import type { importA1111 } from './pnginfo'
 
@@ -165,11 +163,13 @@ function createMockNode(
 
 function createMockCanvas(): Partial<LGraphCanvas> {
   const mockGraph: Partial<LGraph> = {
-    change: vi.fn()
+    change: vi.fn(),
+    getNodeOnPos: vi.fn(() => null)
   }
 
   return {
     graph: mockGraph as LGraph,
+    graph_mouse: [0, 0],
     draw: vi.fn(),
     selectItems: vi.fn(),
     setDirty: vi.fn(),
@@ -179,6 +179,46 @@ function createMockCanvas(): Partial<LGraphCanvas> {
 
 function createTestFile(name: string, type: string): File {
   return new File([''], name, { type })
+}
+
+function createDropEvent(
+  dataTransfer = new DataTransfer(),
+  target?: EventTarget
+): DragEvent {
+  const event = new Event('drop', { bubbles: true, cancelable: true })
+  Object.defineProperty(event, 'dataTransfer', {
+    configurable: true,
+    value: dataTransfer
+  })
+  if (target) {
+    Object.defineProperty(event, 'target', {
+      configurable: true,
+      value: target
+    })
+  }
+  return event as DragEvent
+}
+
+function installDocumentDropHandler(app: ComfyApp) {
+  const addEventListenerSpy = vi.spyOn(document, 'addEventListener')
+  Reflect.apply(Reflect.get(app, 'addDropHandler') as () => void, app, [])
+  const dropListenerCall = addEventListenerSpy.mock.calls.find(
+    ([event]) => event === 'drop'
+  )
+  addEventListenerSpy.mockRestore()
+
+  if (!dropListenerCall) throw new Error('Drop handler was not installed')
+
+  const [, listener, options] = dropListenerCall
+  document.removeEventListener('drop', listener as EventListener, options)
+  return listener as unknown as (event: DragEvent) => Promise<void>
+}
+
+function setCanvasEventPosition<T extends MouseEvent>(
+  event: T & Partial<CanvasPointerExtensions>
+): asserts event is T & CanvasPointerEvent {
+  Object.defineProperty(event, 'canvasX', { value: 10 })
+  Object.defineProperty(event, 'canvasY', { value: 20 })
 }
 
 /**
@@ -283,134 +323,6 @@ describe('ComfyApp', () => {
   })
 
   describe('loadGraphData', () => {
-    function prepareResourceReload() {
-      app.canvasElRef.value = document.createElement('canvas')
-      Reflect.set(app, 'rootGraphInternal', new LGraph())
-      const store = useExecutionErrorStore()
-      const graphId = '11111111-1111-4111-8111-111111111111'
-      store.setActiveGraph(graphId)
-      useMissingModelStore().setMissingModels([
-        {
-          nodeId: createNodeExecutionId([1]),
-          nodeType: 'CheckpointLoaderSimple',
-          widgetName: 'ckpt_name',
-          name: 'model.safetensors',
-          isAssetSupported: false,
-          isMissing: true
-        }
-      ])
-      mockWorkflowService.afterLoadNewGraph.mockImplementation(async () => {
-        store.setActiveGraph(graphId)
-      })
-      return store
-    }
-
-    it.for(['immediate', 'deferred', 'unverified', 'skipped'] as const)(
-      'retires reloaded resource errors only after successful verification: %s',
-      async (verification) => {
-        const store = prepareResourceReload()
-        const absorbed = validationError('value_not_in_list', 'ckpt_name', {
-          received_value: 'model.safetensors'
-        })
-        const unrelated = validationError('required_input_missing', 'positive')
-        store.recordNodeErrors({ '1': nodeError([absorbed, unrelated]) })
-
-        let finishModels:
-          | ((candidates: MissingModelCandidate[]) => void)
-          | undefined
-        let finishMedia:
-          | ((candidates: MissingMediaCandidate[]) => void)
-          | undefined
-        vi.mocked(runMissingModelPipeline).mockImplementation(
-          async ({ onVerified }) => {
-            finishModels = onVerified
-            if (verification === 'immediate') onVerified?.([])
-            return { missingModels: [], confirmedCandidates: [] }
-          }
-        )
-        vi.spyOn(
-          missingMediaPipeline,
-          'runMissingMediaPipeline'
-        ).mockImplementation(async ({ onVerified }) => {
-          finishMedia = onVerified
-          if (verification === 'immediate') onVerified?.([])
-        })
-
-        await app.loadGraphData(createWorkflowGraphData(), false, true, null, {
-          skipAssetScans: verification === 'skipped'
-        })
-
-        if (verification === 'immediate') {
-          expect(store.lastNodeErrors?.['1'].errors).toEqual([unrelated])
-          return
-        }
-        expect(store.lastNodeErrors?.['1'].errors).toEqual([
-          absorbed,
-          unrelated
-        ])
-        if (verification !== 'deferred') return
-        expect(finishModels).toBeTypeOf('function')
-        expect(finishMedia).toBeTypeOf('function')
-        finishModels?.([])
-        expect(store.lastNodeErrors?.['1'].errors).toEqual([unrelated])
-        finishMedia?.([])
-        expect(store.lastNodeErrors?.['1'].errors).toEqual([unrelated])
-      }
-    )
-
-    it('retires verified model errors while preserving errors from failed media verification', async () => {
-      const store = prepareResourceReload()
-      const media = createMissingMediaCandidate([toNodeId(2)], {
-        name: 'portrait.png'
-      })
-      useMissingMediaStore().setMissingMedia([media])
-      const mediaError = validationError('value_not_in_list', 'image', {
-        received_value: 'portrait.png'
-      })
-      const unrelated = validationError('required_input_missing', 'positive')
-      store.recordNodeErrors({
-        '1': nodeError([
-          validationError('value_not_in_list', 'ckpt_name', {
-            received_value: 'model.safetensors'
-          }),
-          unrelated
-        ]),
-        '2': nodeError([mediaError])
-      })
-
-      vi.mocked(runMissingModelPipeline).mockImplementation(
-        async ({ onVerified }) => {
-          onVerified?.([])
-          return { missingModels: [], confirmedCandidates: [] }
-        }
-      )
-      vi.spyOn(missingMediaScan, 'scanAllMediaCandidates').mockReturnValue([
-        { ...media, isMissing: undefined }
-      ])
-      vi.spyOn(
-        missingMediaScan,
-        'isMissingMediaCandidateScopeActive'
-      ).mockReturnValue(true)
-      vi.spyOn(missingMediaScan, 'verifyMediaCandidates').mockRejectedValue(
-        new Error('asset service unavailable')
-      )
-
-      await app.loadGraphData(createWorkflowGraphData(), false, true, null)
-
-      await vi.waitFor(() => {
-        expect(useToastStore().add).toHaveBeenCalledWith(
-          expect.objectContaining({
-            severity: 'warn',
-            summary: t('toastMessages.missingMediaVerificationFailed')
-          })
-        )
-      })
-      expect(store.lastNodeErrors).toEqual({
-        '1': nodeError([unrelated]),
-        '2': nodeError([mediaError])
-      })
-    })
-
     it('forwards clean and navigation intent to workflow navigation', async () => {
       app.canvasElRef.value = document.createElement('canvas')
       Reflect.set(app, 'rootGraphInternal', new LGraph())
@@ -670,7 +582,7 @@ describe('ComfyApp', () => {
         .spyOn(api, 'queuePrompt')
         .mockImplementation(() => {
           expect(api.authToken).toBe('workspace-token')
-          return Promise.resolve({ prompt_id: 'job-1' })
+          return Promise.resolve({ prompt_id: 'job-1', error: '' })
         })
 
       const submission = app.queuePrompt(0)
@@ -707,7 +619,7 @@ describe('ComfyApp', () => {
         .spyOn(api, 'queuePrompt')
         .mockImplementation(() => {
           expect(api.authToken).toBe('workspace-token-b')
-          return Promise.resolve({ prompt_id: 'job-1' })
+          return Promise.resolve({ prompt_id: 'job-1', error: '' })
         })
 
       const submission = app.queuePrompt(0)
@@ -763,7 +675,7 @@ describe('ComfyApp', () => {
           .spyOn(api, 'queuePrompt')
           .mockImplementation(() => {
             expect(api.authToken).toBe('workspace-token')
-            return Promise.resolve({ prompt_id: 'job-1' })
+            return Promise.resolve({ prompt_id: 'job-1', error: '' })
           })
 
         await expect(app.queuePrompt(0)).resolves.toBe(true)
@@ -889,7 +801,7 @@ describe('ComfyApp', () => {
         .spyOn(api, 'queuePrompt')
         .mockImplementation(() => {
           expect(api.apiKey).toBe('comfyui-valid-key')
-          return Promise.resolve({ prompt_id: 'job-1' })
+          return Promise.resolve({ prompt_id: 'job-1', error: '' })
         })
 
       await expect(app.queuePrompt(0)).resolves.toBe(true)
@@ -948,7 +860,8 @@ describe('ComfyApp', () => {
         traceback: []
       })
       vi.spyOn(api, 'queuePrompt').mockResolvedValue({
-        prompt_id: 'job-1'
+        prompt_id: 'job-1',
+        error: ''
       })
 
       await app.queuePrompt(0)
@@ -997,7 +910,8 @@ describe('ComfyApp', () => {
       vi.spyOn(api, 'dispatchCustomEvent').mockImplementation(() => true)
       vi.spyOn(api, 'queuePrompt').mockResolvedValue({
         prompt_id: 'job-1',
-        node_errors: nodeErrors
+        node_errors: nodeErrors,
+        error: ''
       })
 
       await expect(app.queuePrompt(0)).resolves.toBe(false)
@@ -1020,10 +934,12 @@ describe('ComfyApp', () => {
       setTelemetryRegistry(registry)
       vi.spyOn(api, 'queuePrompt')
         .mockResolvedValueOnce({
-          prompt_id: 'job-1'
+          prompt_id: 'job-1',
+          error: ''
         })
         .mockResolvedValueOnce({
-          prompt_id: 'job-2'
+          prompt_id: 'job-2',
+          error: ''
         })
 
       try {
@@ -1078,7 +994,8 @@ describe('ComfyApp', () => {
           })
       )
       vi.spyOn(api, 'queuePrompt').mockResolvedValue({
-        prompt_id: 'job-1'
+        prompt_id: 'job-1',
+        error: ''
       })
 
       try {
@@ -1110,7 +1027,9 @@ describe('ComfyApp', () => {
       const now = vi.spyOn(performance, 'now').mockReturnValue(42)
       vi.spyOn(api, 'queuePrompt').mockImplementation(async () => {
         now.mockReturnValue(62)
-        return {}
+        return {
+          error: 'Prompt rejected'
+        }
       })
 
       try {
@@ -1261,7 +1180,8 @@ describe('ComfyApp', () => {
         throw new Error('Context unavailable')
       })
       vi.spyOn(api, 'queuePrompt').mockResolvedValue({
-        prompt_id: 'job-1'
+        prompt_id: 'job-1',
+        error: ''
       })
 
       try {
@@ -1288,7 +1208,8 @@ describe('ComfyApp', () => {
       registry.registerProvider({ trackExecutionOutcome: vi.fn() })
       setTelemetryRegistry(registry)
       vi.spyOn(api, 'queuePrompt').mockResolvedValue({
-        prompt_id: 'job-1'
+        prompt_id: 'job-1',
+        error: ''
       })
 
       try {
@@ -1315,7 +1236,8 @@ describe('ComfyApp', () => {
     it('preserves legacy partial execution calls from extensions', async () => {
       prepareEmptyPromptQueue()
       vi.spyOn(api, 'queuePrompt').mockResolvedValue({
-        prompt_id: 'job-1'
+        prompt_id: 'job-1',
+        error: ''
       })
       const queueNodeIds = [createNodeExecutionId([1])]
 
@@ -1337,7 +1259,8 @@ describe('ComfyApp', () => {
         'getExecutionContext'
       )
       vi.spyOn(api, 'queuePrompt').mockResolvedValue({
-        prompt_id: 'job-1'
+        prompt_id: 'job-1',
+        error: ''
       })
 
       await app.queuePrompt(0)
@@ -1351,7 +1274,8 @@ describe('ComfyApp', () => {
       registry.registerProvider({ trackExecutionOutcome: vi.fn() })
       setTelemetryRegistry(registry)
       vi.spyOn(api, 'queuePrompt').mockResolvedValue({
-        prompt_id: 'job-1'
+        prompt_id: 'job-1',
+        error: ''
       })
       vi.spyOn(app.ui.queue, 'update').mockRejectedValue(
         new Error('Queue UI refresh failed')
@@ -1481,7 +1405,8 @@ describe('ComfyApp', () => {
       vi.spyOn(api, 'queuePrompt')
         .mockImplementationOnce(() => firstResponse)
         .mockResolvedValueOnce({
-          prompt_id: 'job-2'
+          prompt_id: 'job-2',
+          error: ''
         })
 
       const firstQueue = app.queuePrompt(0)
@@ -2129,7 +2054,7 @@ describe('ComfyApp', () => {
       })
       mockImportA1111.mockImplementation(
         async (_graph, _parameters, beforeGraphClear) => {
-          await beforeGraphClear?.()
+          beforeGraphClear?.()
           return 'imported'
         }
       )
@@ -2320,14 +2245,17 @@ describe('ComfyApp', () => {
 
       const executionErrorStore = useExecutionErrorStore()
       executionErrorStore.recordNodeErrors(failedKSamplerErrors)
+      expect(executionErrorStore.totalErrorCount).toBe(1)
 
       await switchToWorkflow(workflowService, graph, workflowB, workflowBId)
 
       expect(executionErrorStore.lastNodeErrors).toBeNull()
+      expect(executionErrorStore.totalErrorCount).toBe(0)
 
       await switchToWorkflow(workflowService, graph, workflowA, workflowAId)
 
       expect(executionErrorStore.lastNodeErrors).toEqual(failedKSamplerErrors)
+      expect(executionErrorStore.totalErrorCount).toBe(1)
     })
 
     it('gives each imported workflow its own restorable run errors', async () => {
@@ -2618,6 +2546,18 @@ describe('ComfyApp', () => {
       expect(pasteImageNodes).not.toHaveBeenCalled()
       expect(createNode).not.toHaveBeenCalled()
     })
+
+    it('should process image files with empty MIME type when extension is recognized', async () => {
+      const mockNode = createMockNode({ id: 1 })
+      vi.mocked(pasteImageNodes).mockResolvedValue([mockNode])
+
+      await app.handleFileList([createTestFile('test.jpg', '')])
+
+      expect(pasteImageNodes).toHaveBeenCalledWith(mockCanvas, [
+        expect.any(File)
+      ])
+      expect(mockCanvas.selectItems).toHaveBeenCalledWith([mockNode])
+    })
   })
 
   describe('handleAudioFileList', () => {
@@ -2726,6 +2666,22 @@ describe('ComfyApp', () => {
       const imageFile = createTestFile('test.png', 'image/png')
 
       await app.handleFile(imageFile)
+
+      expect(createNode).toHaveBeenCalledWith(mockCanvas, 'LoadImage')
+      expect(pasteImageNode).toHaveBeenCalledWith(
+        mockCanvas,
+        expect.any(DataTransferItemList),
+        mockNode
+      )
+    })
+
+    it('should handle image files with empty MIME type by extension', async () => {
+      vi.mocked(getWorkflowDataFromFile).mockResolvedValue({})
+
+      const mockNode = createMockNode()
+      vi.mocked(createNode).mockResolvedValue(mockNode)
+
+      await app.handleFile(createTestFile('test.jpg', ''))
 
       expect(createNode).toHaveBeenCalledWith(mockCanvas, 'LoadImage')
       expect(pasteImageNode).toHaveBeenCalledWith(
@@ -3108,6 +3064,227 @@ describe('ComfyApp', () => {
         })
       } finally {
         releaseOpenWorkflow()
+      }
+    })
+
+    it('ignores drop events already handled by a Vue node', async () => {
+      const dragOverNode = createMockNode({
+        id: 1,
+        onDragOver: vi.fn(() => true),
+        onDragDrop: vi.fn().mockResolvedValue(true)
+      })
+      const positionNode = createMockNode({
+        id: 2,
+        onDragOver: vi.fn(() => true),
+        onDragDrop: vi.fn().mockResolvedValue(true)
+      })
+      const canvasContainer = document.createElement('div')
+      const canvasChild = document.createElement('canvas')
+      canvasContainer.append(canvasChild)
+      document.body.append(canvasContainer)
+
+      app.canvasContainer = canvasContainer
+      app.dragOverNode = dragOverNode
+      mockCanvas.adjustMouseEvent = vi.fn(setCanvasEventPosition)
+      mockCanvas.graph = {
+        change: vi.fn(),
+        getNodeOnPos: vi.fn(() => positionNode)
+      } as unknown as LGraph
+
+      try {
+        const handleDrop = installDocumentDropHandler(app)
+        const event = createDropEvent(new DataTransfer(), canvasChild)
+        markDropEventHandled(event)
+        await handleDrop(event)
+
+        expect(mockCanvas.adjustMouseEvent).not.toHaveBeenCalled()
+        expect(dragOverNode.onDragOver).not.toHaveBeenCalled()
+        expect(dragOverNode.onDragDrop).not.toHaveBeenCalled()
+        expect(positionNode.onDragOver).not.toHaveBeenCalled()
+        expect(positionNode.onDragDrop).not.toHaveBeenCalled()
+        expect(extractFilesFromDragEvent).not.toHaveBeenCalled()
+      } finally {
+        canvasContainer.remove()
+      }
+    })
+
+    it('ignores default-prevented drops outside the graph canvas', async () => {
+      const dragOverNode = createMockNode({
+        id: 1,
+        onDragOver: vi.fn(() => true),
+        onDragDrop: vi.fn().mockResolvedValue(true)
+      })
+      const canvasContainer = document.createElement('div')
+      const outsideTarget = document.createElement('div')
+      document.body.append(canvasContainer, outsideTarget)
+
+      app.canvasContainer = canvasContainer
+      app.dragOverNode = dragOverNode
+      mockCanvas.adjustMouseEvent = vi.fn(setCanvasEventPosition)
+
+      try {
+        const handleDrop = installDocumentDropHandler(app)
+        const event = createDropEvent(new DataTransfer(), outsideTarget)
+        event.preventDefault()
+        await handleDrop(event)
+
+        expect(mockCanvas.adjustMouseEvent).not.toHaveBeenCalled()
+        expect(dragOverNode.onDragOver).not.toHaveBeenCalled()
+        expect(dragOverNode.onDragDrop).not.toHaveBeenCalled()
+        expect(extractFilesFromDragEvent).not.toHaveBeenCalled()
+      } finally {
+        canvasContainer.remove()
+        outsideTarget.remove()
+      }
+    })
+
+    it('routes default-prevented canvas drops to the previous drag-over node', async () => {
+      const dragOverNode = createMockNode({
+        id: 1,
+        onDragOver: vi.fn(() => true),
+        onDragDrop: vi.fn().mockResolvedValue(true)
+      })
+      const positionNode = createMockNode({
+        id: 2,
+        onDragOver: vi.fn(() => false),
+        onDragDrop: vi.fn().mockResolvedValue(true)
+      })
+      const canvasContainer = document.createElement('div')
+      const canvasChild = document.createElement('canvas')
+      canvasContainer.append(canvasChild)
+      document.body.append(canvasContainer)
+
+      app.canvasContainer = canvasContainer
+      app.dragOverNode = dragOverNode
+      mockCanvas.adjustMouseEvent = vi.fn(setCanvasEventPosition)
+      mockCanvas.graph = {
+        change: vi.fn(),
+        getNodeOnPos: vi.fn(() => positionNode)
+      } as unknown as LGraph
+
+      try {
+        const handleDrop = installDocumentDropHandler(app)
+        const event = createDropEvent(new DataTransfer(), canvasChild)
+        event.preventDefault()
+        await handleDrop(event)
+
+        expect(dragOverNode.onDragDrop).toHaveBeenCalledWith(event)
+        expect(positionNode.onDragDrop).not.toHaveBeenCalled()
+
+        app.dragOverNode = null
+        const rejectedEvent = createDropEvent(new DataTransfer(), canvasChild)
+        await handleDrop(rejectedEvent)
+
+        expect(positionNode.onDragOver).toHaveBeenCalledWith(rejectedEvent)
+        expect(positionNode.onDragDrop).not.toHaveBeenCalled()
+      } finally {
+        canvasContainer.remove()
+      }
+    })
+
+    it('routes drops to an accepting node at the final canvas position', async () => {
+      const positionNode = createMockNode({
+        id: 2,
+        onDragOver: vi.fn(() => true),
+        onDragDrop: vi.fn().mockResolvedValue(true)
+      })
+      const canvasContainer = document.createElement('div')
+      const canvasChild = document.createElement('canvas')
+      canvasContainer.append(canvasChild)
+      document.body.append(canvasContainer)
+
+      app.canvasContainer = canvasContainer
+      app.dragOverNode = null
+      mockCanvas.adjustMouseEvent = vi.fn(setCanvasEventPosition)
+      mockCanvas.graph = {
+        change: vi.fn(),
+        getNodeOnPos: vi.fn(() => positionNode)
+      } as unknown as LGraph
+
+      try {
+        const handleDrop = installDocumentDropHandler(app)
+        const event = createDropEvent(new DataTransfer(), canvasChild)
+        await handleDrop(event)
+
+        expect(positionNode.onDragOver).toHaveBeenCalledWith(event)
+        expect(positionNode.onDragDrop).toHaveBeenCalledWith(event)
+        expect(extractFilesFromDragEvent).not.toHaveBeenCalled()
+      } finally {
+        canvasContainer.remove()
+      }
+    })
+
+    it('skips node routing when continuing a declined Vue-node drop', async () => {
+      const dragOverNode = createMockNode({
+        id: 1,
+        onDragOver: vi.fn(() => true),
+        onDragDrop: vi.fn().mockResolvedValue(false)
+      })
+      const positionNode = createMockNode({
+        id: 2,
+        onDragOver: vi.fn(() => true),
+        onDragDrop: vi.fn().mockResolvedValue(true)
+      })
+      const canvasContainer = document.createElement('div')
+      const canvasChild = document.createElement('canvas')
+      canvasContainer.append(canvasChild)
+      document.body.append(canvasContainer)
+
+      app.canvasContainer = canvasContainer
+      app.dragOverNode = dragOverNode
+      mockCanvas.adjustMouseEvent = vi.fn(setCanvasEventPosition)
+      mockCanvas.graph = {
+        change: vi.fn(),
+        getNodeOnPos: vi.fn(() => positionNode)
+      } as unknown as LGraph
+      vi.mocked(extractFilesFromDragEvent).mockResolvedValue([])
+
+      try {
+        const event = createDropEvent(new DataTransfer(), canvasChild)
+        event.preventDefault()
+        await app.handleFileDrop(event, { skipNodeRouting: true })
+
+        expect(dragOverNode.onDragOver).not.toHaveBeenCalled()
+        expect(dragOverNode.onDragDrop).not.toHaveBeenCalled()
+        expect(positionNode.onDragOver).not.toHaveBeenCalled()
+        expect(positionNode.onDragDrop).not.toHaveBeenCalled()
+        expect(extractFilesFromDragEvent).toHaveBeenCalledWith(event)
+      } finally {
+        canvasContainer.remove()
+      }
+    })
+
+    it('preserves aggregate drag-over targets without onDragOver', async () => {
+      const aggregateDragOverNode = {
+        id: UNASSIGNED_NODE_ID,
+        onDragDrop: vi.fn().mockResolvedValue(true)
+      }
+      const positionNode = createMockNode({
+        id: 2,
+        onDragDrop: vi.fn().mockResolvedValue(true)
+      })
+      const canvasContainer = document.createElement('div')
+      const canvasChild = document.createElement('canvas')
+      canvasContainer.append(canvasChild)
+      document.body.append(canvasContainer)
+
+      app.canvasContainer = canvasContainer
+      app.dragOverNode = aggregateDragOverNode
+      mockCanvas.adjustMouseEvent = vi.fn(setCanvasEventPosition)
+      mockCanvas.graph = {
+        change: vi.fn(),
+        getNodeOnPos: vi.fn(() => positionNode)
+      } as unknown as LGraph
+
+      try {
+        const handleDrop = installDocumentDropHandler(app)
+        const event = createDropEvent(new DataTransfer(), canvasChild)
+        await handleDrop(event)
+
+        expect(aggregateDragOverNode.onDragDrop).toHaveBeenCalledWith(event)
+        expect(positionNode.onDragDrop).not.toHaveBeenCalled()
+      } finally {
+        canvasContainer.remove()
       }
     })
   })

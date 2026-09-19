@@ -17,7 +17,7 @@ import { useI18n } from 'vue-i18n'
 
 import { useCurrentUser } from '@/composables/auth/useCurrentUser'
 import { useTelemetry } from '@/platform/telemetry'
-import { createGraphMutations } from '@/workbench/extensions/agent/crdt/graphMutations'
+import { createGraphMutations } from '@/core/graph/graphMutations'
 import { useWorkflowService } from '@/platform/workflow/core/services/workflowService'
 import type { ComfyWorkflow } from '@/platform/workflow/management/stores/comfyWorkflow'
 import { useWorkflowStore } from '@/platform/workflow/management/stores/workflowStore'
@@ -27,7 +27,8 @@ import { MIME_ASSET_INFO } from '@/platform/assets/schemas/mediaAssetSchema'
 import {
   fetchDroppedAsset,
   getDroppedAsset,
-  hasVideoType
+  hasVideoType,
+  markDropEventHandled
 } from '@/utils/eventUtils'
 import { useAssetsStore } from '@/stores/assetsStore'
 import { AGENT_ATTACH_ACCEPT, isAgentAttachable } from './utils/attachableFiles'
@@ -57,10 +58,6 @@ import { useBillingContext } from '@/composables/billing/useBillingContext'
 import { useAccountPreconditionDialog } from '@/platform/cloud/subscription/composables/useAccountPreconditionDialog'
 import { useBillingCapabilities } from '@/platform/workspace/composables/useBillingCapabilities'
 import { useOnboardingTourStore } from '@/platform/onboarding/onboardingTourStore'
-import {
-  adoptSharedOnboardingFlag,
-  scopedOnboardingKey
-} from './composables/agent/useOnboarding'
 import { useWorkspaceUI } from '@/platform/workspace/composables/useWorkspaceUI'
 
 import AgentPanel from './components/agent/AgentPanel.vue'
@@ -100,7 +97,6 @@ import { createStandaloneAgentEventSource } from './services/agent/standaloneAge
 import { useAgentChatHistoryStore } from './stores/agent/agentChatHistoryStore'
 import { agentMessageText } from './utils/agentMessageText'
 import { useAgentComposerStore } from './stores/agent/agentComposerStore'
-import { useTeamWorkspaceStore } from '@/platform/workspace/stores/teamWorkspaceStore'
 import { useAgentConsentStore } from './stores/agent/agentConsentStore'
 import { useAgentPanelStore } from './stores/agent/agentPanelStore'
 import {
@@ -204,20 +200,6 @@ const agentTabGraph: ComfyWorkflowJSON = {
 
 const canvasStore = useCanvasStore()
 const { accepted: consentAccepted } = storeToRefs(useAgentConsentStore())
-const workspaceStore = useTeamWorkspaceStore()
-const onboardingKey = computed(() =>
-  scopedOnboardingKey(
-    resolvedUserInfo.value?.id,
-    workspaceStore.activeWorkspaceId
-  )
-)
-watch(
-  onboardingKey,
-  (key) => {
-    if (key) adoptSharedOnboardingFlag(key)
-  },
-  { immediate: true }
-)
 const { activeTour } = storeToRefs(useOnboardingTourStore())
 const graphMutationsByWorkflow = new Map<
   string,
@@ -1098,12 +1080,18 @@ function onPanelDragOver(event: DragEvent): void {
   if (isAttachableDrag(event)) event.preventDefault()
 }
 
+function claimPanelDrop(event: DragEvent): void {
+  event.preventDefault()
+  event.stopPropagation()
+  markDropEventHandled(event)
+}
+
 function onPanelDrop(event: DragEvent): void {
   clearAssetDrag()
   // A dropped asset card carries a URI, not a File, so the claim must happen
   // before the async fetch resolves it into one.
   if ((event.dataTransfer?.files.length ?? 0) === 0 && isAssetDrag(event)) {
-    event.preventDefault()
+    claimPanelDrop(event)
     void attachDroppedAsset(event)
     return
   }
@@ -1113,7 +1101,7 @@ function onPanelDrop(event: DragEvent): void {
     isAgentAttachable
   )
   if (files.length === 0) return
-  event.preventDefault()
+  claimPanelDrop(event)
   void attachment.addFiles(files)
 }
 </script>
@@ -1193,14 +1181,9 @@ function onPanelDrop(event: DragEvent): void {
       </template>
     </AgentPanel>
     <OnboardingCoach
-      v-if="
-        consentAccepted &&
-        onboardingKey &&
-        !canvasStore.linearMode &&
-        activeTour === null
-      "
+      v-if="consentAccepted && !canvasStore.linearMode && activeTour === null"
       :steps="coachSteps"
-      :storage-key="onboardingKey"
+      storage-key="Comfy.AgentPanel.onboarded"
     />
   </div>
 </template>
