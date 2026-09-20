@@ -221,6 +221,323 @@ jobs:
           assert count == 1, "obsolete runtime fallback tests not found"
           assert "keeps the legacy fallback available in personal workspace" not in s
           path.write_text(s)
+          # Bring PR-added tests forward to the repository's current conventions.
+          def modernize_test_harness(test_path: str) -> None:
+              p = Path(test_path)
+              text = p.read_text()
+              text = re.sub(
+                  r"^import \{ createTestingPinia \} from '@pinia/testing'\n",
+                  "",
+                  text,
+                  flags=re.M,
+              )
+              text = re.sub(
+                  r"^import \{ createPinia, setActivePinia \} from 'pinia'\n",
+                  "",
+                  text,
+                  flags=re.M,
+              )
+              text = re.sub(
+                  r"^import \{ setActivePinia \} from 'pinia'\n",
+                  "",
+                  text,
+                  flags=re.M,
+              )
+              text = re.sub(
+                  r"^\s*setActivePinia\(createTestingPinia\(\{ stubActions: false \}\)\)\n",
+                  "",
+                  text,
+                  flags=re.M,
+              )
+              text = re.sub(
+                  r"^\s*setActivePinia\(createTestingPinia\(\)\)\n",
+                  "",
+                  text,
+                  flags=re.M,
+              )
+              text = re.sub(
+                  r"^\s*setActivePinia\(createPinia\(\)\)\n",
+                  "",
+                  text,
+                  flags=re.M,
+              )
+              text = re.sub(
+                  r"vi\.mock\(\s*(['\"])([^'\"]+)\1\s*,",
+                  lambda m: f"vi.mock(import({m.group(1)}{m.group(2)}{m.group(1)}),",
+                  text,
+              )
+              p.write_text(text)
+
+          for test_path in [
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.persistenceControl.test.ts",
+              "src/platform/workflow/management/stores/workflowStore.persistence.test.ts",
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts",
+          ]:
+              modernize_test_harness(test_path)
+
+          # The fault-injection suites used resetModules plus a private Pinia.
+          # Use the global testing Pinia and reset storage availability explicitly.
+          for test_path in [
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts",
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts",
+          ]:
+              modernize_test_harness(test_path)
+              p = Path(test_path)
+              text = p.read_text()
+              storage_import = "import { StorageKeys } from '../base/storageKeys'\n"
+              assert storage_import in text
+              text = text.replace(
+                  storage_import,
+                  "import { resetStorageAvailable } from '../base/storageIO'\n"
+                  + storage_import
+                  + "import { useWorkflowDraftStoreV2 } from './workflowDraftStoreV2'\n",
+                  1,
+              )
+              text, count = re.subn(
+                  r"\nasync function freshStore\(\) \{\n"
+                  r"  vi\.resetModules\(\)\n"
+                  r"  const \{ useWorkflowDraftStoreV2 \} = await import\('./workflowDraftStoreV2'\)\n"
+                  r"  return useWorkflowDraftStoreV2\(\)\n"
+                  r"\}\n",
+                  "\n",
+                  text,
+                  count=1,
+              )
+              assert count == 1, f"freshStore helper not found in {test_path}"
+              text = text.replace(
+                  "const store = await freshStore()",
+                  "const store = useWorkflowDraftStoreV2()",
+              )
+              text = text.replace(
+                  "    sessionStorage.clear()\n",
+                  "    sessionStorage.clear()\n    resetStorageAvailable()\n",
+                  1,
+              )
+              assert "freshStore" not in text
+              p.write_text(text)
+
+          # Fold workflowService persistence coverage into the canonical suite.
+          p = Path("src/platform/workflow/core/services/workflowService.test.ts")
+          text = p.read_text()
+          start = text.index(
+              "    it('should save active workflow state through the V2 draft store'"
+          )
+          end = text.index(
+              "    it('should show an error toast when the V2 draft store cannot save'",
+              start,
+          )
+          block = text[start:end]
+          close = block.rfind("    })")
+          assert close >= 0
+          block = (
+              block[:close]
+              + "      expect(useWorkflowDraftStoreV2().markSaveSucceeded).toHaveBeenCalledOnce()\n"
+              + block[close:]
+          )
+          block += """    it('does not persist the outgoing workflow while persistence is paused', () => {
+      vi.spyOn(useSettingStore(), 'get').mockImplementation((key: string) => {
+        return key === 'Comfy.Workflow.Persist'
+      })
+      const activeWorkflow = createModeTestWorkflow({
+        path: 'workflows/paused.json'
+      })
+      workflowStore.activeWorkflow = activeWorkflow
+      vi.mocked(useWorkflowDraftStoreV2().isPersistencePaused).mockReturnValue(
+        true
+      )
+
+      useWorkflowService().beforeLoadNewGraph()
+
+      expect(useWorkflowDraftStoreV2().saveDraft).not.toHaveBeenCalled()
+    })
+
+    it('persists workflow view state when view restore is enabled', () => {
+      vi.spyOn(useSettingStore(), 'get').mockImplementation((key: string) => {
+        return (
+          key === 'Comfy.Workflow.Persist' ||
+          key === 'Comfy.EnableWorkflowViewRestore'
+        )
+      })
+      const activeWorkflow = createModeTestWorkflow({
+        path: 'workflows/view-state.json'
+      })
+      activeWorkflow.changeTracker.ds = { scale: 0.5, offset: [10, -20] }
+      workflowStore.activeWorkflow = activeWorkflow
+
+      useWorkflowService().beforeLoadNewGraph()
+
+      const [, payload] = vi.mocked(useWorkflowDraftStoreV2().saveDraft).mock
+        .calls[0]
+      expect(JSON.parse(payload).extra.ds).toEqual({
+        scale: 0.5,
+        offset: [10, -20]
+      })
+    })
+
+"""
+          text = text[:start] + block + text[end:]
+
+          throw_anchor = (
+              "    it('should log and show an error toast when the V2 draft store throws'"
+          )
+          idx = text.index(throw_anchor)
+          dedupe = """    it('deduplicates repeated failures through the shared failure episode', () => {
+      vi.spyOn(useSettingStore(), 'get').mockImplementation((key: string) => {
+        return key === 'Comfy.Workflow.Persist'
+      })
+      const addToastSpy = vi.spyOn(useToastStore(), 'add')
+      vi.mocked(useWorkflowDraftStoreV2().saveDraft).mockReturnValue(false)
+      vi.mocked(useWorkflowDraftStoreV2().shouldNotifySaveFailure)
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(false)
+      workflowStore.activeWorkflow = createModeTestWorkflow({
+        path: 'workflows/failure-episode.json'
+      })
+
+      const service = useWorkflowService()
+      service.beforeLoadNewGraph()
+      service.beforeLoadNewGraph()
+
+      expect(
+        useWorkflowDraftStoreV2().shouldNotifySaveFailure
+      ).toHaveBeenCalledTimes(2)
+      expect(addToastSpy).toHaveBeenCalledTimes(1)
+    })
+
+"""
+          text = text[:idx] + dedupe + text[idx:]
+          p.write_text(text)
+          Path(
+              "src/platform/workflow/core/services/workflowService.persistence.test.ts"
+          ).unlink()
+
+          # Fold reconciliation coverage into the canonical persistence suite.
+          p = Path(
+              "src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.test.ts"
+          )
+          text = p.read_text()
+
+          anchor = "  describe('loadPreviousWorkflowFromStorage', () => {"
+          idx = text.index(anchor)
+          failure_episode = """  it('keeps one save-failure notification across workflow transitions until recovery', async () => {
+    await loadBlankIntoActiveWorkflow()
+
+    const workflowStore = useWorkflowStore()
+    const draftStore = useWorkflowDraftStoreV2()
+    const saveDraftSpy = vi.spyOn(draftStore, 'saveDraft')
+    saveDraftSpy.mockReturnValue(false)
+
+    mountWorkflowPersistence()
+
+    mocks.state.currentGraph = { nodes: [{ id: 1 }] }
+    mocks.state.graphChangedHandler?.()
+    await vi.runAllTimersAsync()
+
+    mocks.state.currentGraph = { nodes: [{ id: 2 }] }
+    mocks.state.graphChangedHandler?.()
+    await vi.runAllTimersAsync()
+    expect(mockToastAdd).toHaveBeenCalledTimes(1)
+
+    const second = workflowStore.createTemporary('second-workflow.json')
+    await workflowStore.openWorkflow(second)
+    await nextTick()
+    expect(mockToastAdd).toHaveBeenCalledTimes(1)
+
+    saveDraftSpy.mockReturnValueOnce(true)
+    mocks.state.currentGraph = { nodes: [{ id: 3 }] }
+    mocks.state.graphChangedHandler?.()
+    await vi.runAllTimersAsync()
+
+    saveDraftSpy.mockReturnValueOnce(false)
+    mocks.state.currentGraph = { nodes: [{ id: 4 }] }
+    mocks.state.graphChangedHandler?.()
+    await vi.runAllTimersAsync()
+    expect(mockToastAdd).toHaveBeenCalledTimes(2)
+  })
+
+"""
+          text = text[:idx] + failure_episode + text[idx:]
+
+          startup_anchor = (
+              "    it('persists a temporary workflow once the user has modified it', async () => {"
+          )
+          idx = text.index(startup_anchor)
+          startup_test = """    it('persists a modified temporary startup workflow synchronously only once', async () => {
+      loadBlankWorkflowMock.mockImplementation(async () => {
+        await loadBlankIntoActiveWorkflow()
+        const workflow = useWorkflowStore().activeWorkflow
+        if (workflow) workflow.isModified = true
+      })
+
+      const draftStore = useWorkflowDraftStoreV2()
+      const saveDraftSpy = vi.spyOn(draftStore, 'saveDraft')
+      vi.spyOn(draftStore, 'getDraft').mockReturnValue(null)
+
+      const { initializeWorkflow } = mountWorkflowPersistence()
+
+      await initializeWorkflow()
+      expect(saveDraftSpy).toHaveBeenCalledOnce()
+
+      await vi.runAllTimersAsync()
+      expect(saveDraftSpy).toHaveBeenCalledOnce()
+    })
+
+"""
+          text = text[:idx] + startup_test + text[idx:]
+
+          restore_anchor = "    it('skips activation when persistence is disabled', async () => {"
+          idx = text.index(restore_anchor)
+          invalid_test = """    it('uses a default temporary workflow for schema-invalid draft JSON', async () => {
+      const workflowStore = useWorkflowStore()
+      vi.spyOn(workflowStore, 'loadWorkflows').mockResolvedValue()
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const draftStore = useWorkflowDraftStoreV2()
+      const path = 'workflows/invalid-draft.json'
+      expect(
+        draftStore.saveDraft(path, JSON.stringify({ title: 'not-a-workflow' }), {
+          name: 'invalid-draft.json',
+          isTemporary: true
+        })
+      ).toBe(true)
+      writeTabState([path], 0)
+
+      const { restoreWorkflowTabsState } = mountWorkflowPersistence()
+      await restoreWorkflowTabsState()
+
+      const restored = workflowStore.getWorkflowByPath(path)
+      expect(restored).toBeDefined()
+      if (!restored?.content) {
+        throw new Error('Expected restored temporary workflow content')
+      }
+      const restoredData = JSON.parse(restored.content) as {
+        version?: unknown
+        title?: unknown
+      }
+      expect(typeof restoredData.version).toBe('number')
+      expect(restoredData.title).toBeUndefined()
+      expect(draftStore.getDraft(path)).toBeNull()
+    })
+
+"""
+          text = text[:idx] + invalid_test + text[idx:]
+          p.write_text(text)
+          Path(
+              "src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.reconciliation.test.ts"
+          ).unlink()
+
+          # Apply dynamic mock syntax after folding tests.
+          for test_path in [
+              "src/platform/workflow/core/services/workflowService.test.ts",
+              "src/platform/workflow/management/stores/workflowStore.persistence.test.ts",
+              "src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.test.ts",
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.persistenceControl.test.ts",
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts",
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts",
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts",
+          ]:
+              modernize_test_harness(test_path)
+
           PY
 
           git add src/platform/workflow/management/stores/comfyWorkflow.ts
