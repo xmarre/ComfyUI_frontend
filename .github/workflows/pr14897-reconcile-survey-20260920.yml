@@ -293,7 +293,7 @@ jobs:
               )
               s = re.sub(
                   r"vi\.mock\(\s*(['\"])([^'\"]+)\1\s*,",
-                  lambda m: "vi.mock(import(" + m.group(1) + m.group(2) + m.group(1) + "),",
+                  lambda m: "vi.mock<unknown>(import(" + m.group(1) + m.group(2) + m.group(1) + "),",
                   s,
               )
               write(path, s)
