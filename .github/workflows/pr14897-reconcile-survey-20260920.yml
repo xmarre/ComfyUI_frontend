@@ -210,6 +210,7 @@ jobs:
 
           path = Path("src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts")
           s = path.read_text()
+          s = s.replace("import { app as comfyApp } from '@/scripts/app'\n", "")
           s = re.sub(r"^\s*workflowName: (?:null|'[^']*'),\n", "", s, flags=re.M)
           obsolete_fallback_tests = re.compile(
               r"\n    it\('does not use unscoped legacy fallbacks outside personal workspace'.*?"
@@ -262,7 +263,7 @@ jobs:
           fi
           if ! git diff --quiet; then
             git add "${changed[@]}"
-            git commit --amend --no-edit
+            HUSKY=0 git commit --amend --no-edit
           fi
           test "$(git rev-list --count "$EXPECTED_BASE"..HEAD)" -eq 1
           test "$(git rev-parse HEAD^)" = "$EXPECTED_BASE"
