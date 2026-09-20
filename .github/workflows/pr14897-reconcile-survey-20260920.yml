@@ -20,7 +20,7 @@ jobs:
       - name: Survey cherry-pick conflicts
         shell: bash
         env:
-          EXPECTED_BASE: b6b92312827417d18bd557472367c6020b90ad4f
+          EXPECTED_BASE: 183f0ea8fdb473aa39572be60388bd767ca84913
           PR_HEAD: 6eab8c21ffba4d256de1b3548b422ef547652d8b
         run: |
           set -euo pipefail
