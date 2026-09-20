@@ -640,8 +640,16 @@ jobs:
           echo "CHANGED_FILES=$(git diff --name-only "$EXPECTED_BASE"...HEAD | wc -l)"
           echo "CHANGED_TS_FILES=${#changed[@]}"
 
-      - name: Full unit coverage
-        run: pnpm test:coverage
+      - name: Verify coverage-reused repin delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Run 35529775439 passed pnpm test:coverage on the immediately prior
+          # candidate. The only upstream delta since that covered base is a
+          # Playwright browser spec, outside the Vitest coverage suite.
+          git diff --name-only be3d7535173aa3cc7c19c09b53d3286ee3513210 "$EXPECTED_BASE" > /tmp/repin-delta
+          cat /tmp/repin-delta
+          test "$(cat /tmp/repin-delta)" = "browser_tests/tests/dialogs/billingReadsSdkRail.spec.ts"
 
       - name: Recheck upstream and publish validated mirror
         shell: bash
