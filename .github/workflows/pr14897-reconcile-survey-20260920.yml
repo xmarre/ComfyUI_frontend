@@ -13,7 +13,7 @@ jobs:
   reconcile:
     runs-on: ubuntu-latest
     env:
-      EXPECTED_BASE: 3f803fe1a4710a73812663950b9c9d754af2675d
+      EXPECTED_BASE: 4e594e54365ef0a5d7744ceae7c990a2db7796b1
       PR_HEAD: 6eab8c21ffba4d256de1b3548b422ef547652d8b
       CANDIDATE_BRANCH: mirror/pr-14897-reconcile-candidate-20260920
     steps:
@@ -649,14 +649,66 @@ jobs:
           # Playwright browser spec, outside the Vitest coverage suite.
           git diff --name-only be3d7535173aa3cc7c19c09b53d3286ee3513210 "$EXPECTED_BASE" > /tmp/repin-delta
           cat /tmp/repin-delta
-          test "$(cat /tmp/repin-delta)" = "browser_tests/tests/dialogs/billingReadsSdkRail.spec.ts"
+          test -s /tmp/repin-delta
+          if grep -Ev '^(browser_tests/|apps/website/)' /tmp/repin-delta; then
+            echo "Coverage-reuse delta touched a non-browser/non-website path" >&2
+            exit 1
+          fi
 
       - name: Recheck upstream and publish validated mirror
         shell: bash
         run: |
           set -euo pipefail
-          git fetch upstream main
-          actual="$(git rev-parse upstream/main)"
-          echo "upstream/main-after-validation=$actual"
-          test "$actual" = "$EXPECTED_BASE"
-          git push origin HEAD:"refs/heads/$CANDIDATE_BRANCH" --force
+
+          validated_base="$EXPECTED_BASE"
+          validated_commit="$(git rev-parse HEAD)"
+          git diff --binary "$validated_base" "$validated_commit" > /tmp/validated-pr.patch
+          git diff --name-only "$validated_base" "$validated_commit" | sort > /tmp/pr-files
+
+          for attempt in 1 2 3 4 5; do
+            git fetch upstream main
+            latest="$(git rev-parse upstream/main)"
+            echo "upstream/main-after-validation=$latest attempt=$attempt"
+
+            if [ "$latest" != "$validated_base" ]; then
+              git merge-base --is-ancestor "$validated_base" "$latest"
+              git diff --name-only "$validated_base" "$latest" | sort > /tmp/upstream-files
+              echo "late upstream delta:"
+              cat /tmp/upstream-files
+
+              # Catch up only across isolated browser/website movement. Anything
+              # else gets a fresh reconciliation/validation run.
+              if grep -Ev '^(browser_tests/|apps/website/)' /tmp/upstream-files; then
+                echo "Late upstream movement escaped the safe catch-up scope" >&2
+                exit 1
+              fi
+              if comm -12 /tmp/pr-files /tmp/upstream-files | grep -q .; then
+                echo "Late upstream movement overlaps PR files" >&2
+                exit 1
+              fi
+
+              git checkout -B pr14897-parent-catchup "$latest"
+              git cherry-pick "$validated_commit"
+              test "$(git rev-list --count "$latest"..HEAD)" -eq 1
+              test "$(git rev-parse HEAD^)" = "$latest"
+              git diff --binary "$latest" HEAD > /tmp/catchup-pr.patch
+              cmp /tmp/validated-pr.patch /tmp/catchup-pr.patch
+              git diff --check "$latest"...HEAD
+
+              validated_base="$latest"
+              validated_commit="$(git rev-parse HEAD)"
+            fi
+
+            # Close the fetch/push race: a new fetch must still name the base
+            # immediately before publishing.
+            git fetch upstream main
+            if [ "$(git rev-parse upstream/main)" = "$validated_base" ]; then
+              git push origin "$validated_commit:refs/heads/$CANDIDATE_BRANCH" --force
+              echo "PUBLISHED_SHA=$validated_commit"
+              echo "PUBLISHED_BASE=$validated_base"
+              exit 0
+            fi
+          done
+
+          echo "main moved too often to publish safely" >&2
+          exit 1
