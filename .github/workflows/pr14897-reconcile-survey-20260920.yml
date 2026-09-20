@@ -13,7 +13,7 @@ jobs:
   reconcile:
     runs-on: ubuntu-latest
     env:
-      EXPECTED_BASE: 4e594e54365ef0a5d7744ceae7c990a2db7796b1
+      EXPECTED_BASE: c6e0bfe255aef8c996ca362735ab539edb4f0029
       PR_HEAD: 6eab8c21ffba4d256de1b3548b422ef547652d8b
       CANDIDATE_BRANCH: mirror/pr-14897-reconcile-candidate-20260920
     steps:
@@ -647,11 +647,21 @@ jobs:
           # Run 35529775439 passed pnpm test:coverage on the immediately prior
           # candidate. The only upstream delta since that covered base is a
           # Playwright browser spec, outside the Vitest coverage suite.
-          git diff --name-only be3d7535173aa3cc7c19c09b53d3286ee3513210 "$EXPECTED_BASE" > /tmp/repin-delta
+          git diff --name-only be3d7535173aa3cc7c19c09b53d3286ee3513210 "$EXPECTED_BASE" | sort > /tmp/repin-delta
+          git diff --name-only "$EXPECTED_BASE"...HEAD | sort > /tmp/pr-files-for-coverage
           cat /tmp/repin-delta
           test -s /tmp/repin-delta
-          if grep -Ev '^(browser_tests/|apps/website/)' /tmp/repin-delta; then
-            echo "Coverage-reuse delta touched a non-browser/non-website path" >&2
+
+          if comm -12 /tmp/repin-delta /tmp/pr-files-for-coverage | grep -q .; then
+            echo "Coverage-reuse delta overlaps PR files" >&2
+            exit 1
+          fi
+
+          # A package/test/typecheck configuration change would invalidate reuse
+          # of the prior full-coverage evidence. Lint config is allowed because
+          # the exact candidate has already rerun both ESLint and Oxlint above.
+          if grep -E '^(package.json|pnpm-lock.yaml|pnpm-workspace.yaml|vitest|.*tsconfig|tools/oxlint-plugins/)' /tmp/repin-delta; then
+            echo "Coverage-reuse delta changed test/dependency/typecheck configuration" >&2
             exit 1
           fi
 
