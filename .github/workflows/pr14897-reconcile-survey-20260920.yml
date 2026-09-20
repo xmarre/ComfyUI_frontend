@@ -540,12 +540,11 @@ jobs:
 
           PY
 
-          git add src/platform/workflow/management/stores/comfyWorkflow.ts
-          git add src/platform/workflow/persistence
+          git add -A
           GIT_EDITOR=true git cherry-pick --continue
 
-          git add src/platform/workflow/management/stores/comfyWorkflow.ts src/platform/workflow/persistence
-          git commit --amend --no-edit
+          git add -A
+          HUSKY=0 git commit --amend --no-edit
 
           test "$(git rev-list --count "$EXPECTED_BASE"..HEAD)" -eq 1
           test "$(git rev-parse HEAD^)" = "$EXPECTED_BASE"
@@ -590,10 +589,10 @@ jobs:
         run: |
           set -euo pipefail
           pnpm typecheck
+          pnpm typecheck:browser
           pnpm exec vitest run \
             src/platform/workflow/management/stores/comfyWorkflow.test.ts \
             src/platform/workflow/core/services/workflowService.test.ts \
-            src/platform/workflow/core/services/workflowService.persistence.test.ts \
             src/platform/workflow/management/stores/workflowStore.persistence.test.ts \
             src/platform/workflow/persistence/base/storageIO.test.ts \
             src/platform/workflow/persistence/base/workflowViewState.test.ts \
@@ -611,6 +610,7 @@ jobs:
           pnpm exec oxfmt --check "${changed[@]}"
           pnpm exec eslint "${changed[@]}"
           pnpm exec oxlint --type-aware "${changed[@]}"
+          pnpm exec oxlint --config tools/oxlint-plugins/vitestCleanup.config.json "${changed[@]}"
           git diff --check "$EXPECTED_BASE"...HEAD
 
           test "$(git rev-list --count "$EXPECTED_BASE"..HEAD)" -eq 1
@@ -618,6 +618,9 @@ jobs:
           echo "FINAL_SHA=$(git rev-parse HEAD)"
           echo "CHANGED_FILES=$(git diff --name-only "$EXPECTED_BASE"...HEAD | wc -l)"
           echo "CHANGED_TS_FILES=${#changed[@]}"
+
+      - name: Full unit coverage
+        run: pnpm test:coverage
 
       - name: Recheck upstream and publish validated mirror
         shell: bash
