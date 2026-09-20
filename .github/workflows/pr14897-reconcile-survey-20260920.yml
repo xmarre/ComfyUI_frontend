@@ -1,4 +1,4 @@
-name: PR14897 reconciliation survey 20260920
+name: PR14897 reconciliation 20260920
 
 on:
   push:
@@ -7,21 +7,22 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  survey:
+  reconcile:
     runs-on: ubuntu-latest
+    env:
+      EXPECTED_BASE: 183f0ea8fdb473aa39572be60388bd767ca84913
+      PR_HEAD: 6eab8c21ffba4d256de1b3548b422ef547652d8b
+      CANDIDATE_BRANCH: mirror/pr-14897-reconcile-candidate-20260920
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - name: Survey cherry-pick conflicts
+
+      - name: Reconcile onto pinned upstream
         shell: bash
-        env:
-          EXPECTED_BASE: 183f0ea8fdb473aa39572be60388bd767ca84913
-          PR_HEAD: 6eab8c21ffba4d256de1b3548b422ef547652d8b
         run: |
           set -euo pipefail
           git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git || true
@@ -29,25 +30,257 @@ jobs:
           actual="$(git rev-parse upstream/main)"
           echo "upstream/main=$actual"
           test "$actual" = "$EXPECTED_BASE"
+
           git config user.name "xmarre"
           git config user.email "54859656+xmarre@users.noreply.github.com"
-          git checkout -B pr14897-survey "$EXPECTED_BASE"
+          git checkout -B pr14897-candidate "$EXPECTED_BASE"
+
           set +e
           git cherry-pick "$PR_HEAD"
           rc=$?
           set -e
-          if [ "$rc" -eq 0 ]; then
-            echo "CHERRY_PICK_CLEAN=1"
-            echo "candidate=$(git rev-parse HEAD)"
-            echo "parent=$(git rev-parse HEAD^)"
-            echo "changed_files=$(git diff --name-only HEAD^ HEAD | wc -l)"
-          else
-            echo "CHERRY_PICK_CLEAN=0"
-            echo "CONFLICTS_BEGIN"
-            git diff --name-only --diff-filter=U
-            echo "CONFLICTS_END"
-            echo "STATUS_BEGIN"
-            git status --short
-            echo "STATUS_END"
-            git cherry-pick --abort
+          test "$rc" -ne 0
+
+          conflicts="$(git diff --name-only --diff-filter=U)"
+          echo "conflicts=$conflicts"
+          test "$conflicts" = "src/platform/workflow/management/stores/comfyWorkflow.ts"
+
+          git checkout --ours -- src/platform/workflow/management/stores/comfyWorkflow.ts
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("src/platform/workflow/management/stores/comfyWorkflow.ts")
+          s = path.read_text()
+
+          anchor = "import { reportError } from '@/platform/telemetry/reportError'\n"
+          addition = (
+              anchor
+              + "import { getValidWorkflowViewState } from '@/platform/workflow/persistence/base/workflowViewState'\n"
+          )
+          assert anchor in s
+          s = s.replace(anchor, addition, 1)
+
+          old = """    if (draft) {
+              if (draft.updatedAt < this.lastModified) {
+                draftStore.removeDraft(this.path)
+                draft = undefined
+              }
+            }
+          """
+          new = """    // Temporary workflows restored from a draft have a synthetic creation
+              // timestamp, not an authoritative backing-file modification time. Comparing
+              // the draft against that timestamp makes every restored temporary draft look
+              // stale and deletes it immediately after recovery.
+              if (draft && !this.isTemporary) {
+                if (draft.updatedAt < this.lastModified) {
+                  draftStore.removeDraft(this.path)
+                  draft = undefined
+                }
+              }
+          """
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          old = """    const initialState = JSON.parse(this.originalContent)
+              const { ChangeTracker } = await import('@/scripts/changeTracker')
+              this.changeTracker = markRaw(new ChangeTracker(this, initialState))
+              if (draftState && draftContent) {
+                this.changeTracker.activeState = draftState
+                this.content = draftContent
+                this._isModified = true
+          """
+          new = """    const initialState = JSON.parse(this.originalContent) as ComfyWorkflowJSON
+
+              // Older or malformed draft payloads may not carry a usable viewport. For a
+              // persisted workflow, retain the authoritative saved view when it is valid.
+              const savedViewState = getValidWorkflowViewState(initialState.extra?.ds)
+              const draftViewState = getValidWorkflowViewState(draftState?.extra?.ds)
+              if (draftState && !draftViewState && savedViewState) {
+                draftState = {
+                  ...draftState,
+                  extra: {
+                    ...draftState.extra,
+                    ds: savedViewState
+                  }
+                }
+                draftContent = JSON.stringify(draftState)
+              }
+
+              const { ChangeTracker } = await import('@/scripts/changeTracker')
+              this.changeTracker = markRaw(new ChangeTracker(this, initialState))
+              if (draftState && draftContent) {
+                this.changeTracker.activeState = draftState
+                this.content = draftContent
+                // New drafts persist this bit when the outgoing canvas snapshot is taken.
+                // Older V2 drafts lack it, so stay conservative and preserve the historical
+                // behavior of treating any recovered draft as modified rather than doing a
+                // full synchronous graph comparison during workflow activation.
+                this._isModified = draft?.isModified ?? true
+          """
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          assert "error_loading_dialog_service_prompt_save" in s
+          assert "return null" in s[s.index("async promptSave"):]
+          path.write_text(s)
+
+          path = Path("src/platform/workflow/persistence/stores/workflowDraftStoreV2.ts")
+          s = path.read_text()
+          s = s.replace("import { api } from '@/scripts/api'\n", "")
+          s = s.replace("  workflowName: string | null\n", "")
+          s = s.replace(
+              """    const {
+                workflowName,
+                preferredPath,
+                fallbackToLatestDraft = false
+              } = options""",
+              """    const { preferredPath, fallbackToLatestDraft = false } = options"""
+          )
+          pattern = re.compile(
+              r"\n    // Legacy fallbacks are NOT workspace-scoped.*?\n  \}\n\n  /\*\*\n   \* Resets",
+              re.S,
+          )
+          s, count = pattern.subn(
+              "\n    return false\n  }\n\n  /**\n   * Resets",
+              s,
+              count=1,
+          )
+          assert count == 1, "legacy fallback block not found"
+          assert "remove after 2026-07-15" not in s
+          assert ("workflow:" + "$" + "{clientId}") not in s
+          path.write_text(s)
+
+          path = Path("src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.ts")
+          s = path.read_text()
+          s = re.sub(r"^\s*workflowName: null,\n", "", s, flags=re.M)
+          path.write_text(s)
+
+          path = Path("src/platform/workflow/persistence/migration/migrateV1toV2.ts")
+          s = path.read_text()
+          marker = "/**\n * Removes legacy workflow persistence keys for a workspace."
+          idx = s.find(marker)
+          assert idx >= 0, "retired migration helper marker not found"
+          s = s[:idx].rstrip() + "\n"
+          assert "export function cleanupV1Data" not in s
+          assert "export function getMigrationStatus" not in s
+          path.write_text(s)
+
+          path = Path("src/platform/workflow/persistence/migration/migrateV1toV2.recovery.test.ts")
+          s = path.read_text()
+          s = s.replace("  cleanupV1Data,\n", "")
+          s = s.replace("  getMigrationStatus,\n", "")
+          s = re.sub(
+              r"\n        expect\(getMigrationStatus\(personalWorkspace\)\)\.toEqual\(\{\n"
+              r"          v1Exists: false,\n"
+              r"          v2Exists: false,\n"
+              r"          v1DraftCount: 0,\n"
+              r"          v2DraftCount: 0\n"
+              r"        \}\)",
+              "",
+              s,
+              count=1,
+          )
+          start = s.find("  describe('cleanup and status'")
+          assert start >= 0
+          s = s[:start].rstrip() + "\n})\n"
+          assert "cleanupV1Data" not in s
+          assert "getMigrationStatus" not in s
+          path.write_text(s)
+
+          path = Path("src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts")
+          s = path.read_text()
+          s = re.sub(r"^\s*workflowName: (?:null|'[^']*'),\n", "", s, flags=re.M)
+          path.write_text(s)
+          PY
+
+          git checkout upstream/main -- src/platform/workflow/persistence/migration/migrateV1toV2.test.ts
+          git add src/platform/workflow/management/stores/comfyWorkflow.ts
+          git add src/platform/workflow/persistence
+          GIT_EDITOR=true git cherry-pick --continue
+
+          git add src/platform/workflow/management/stores/comfyWorkflow.ts src/platform/workflow/persistence
+          git commit --amend --no-edit
+
+          test "$(git rev-list --count "$EXPECTED_BASE"..HEAD)" -eq 1
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_BASE"
+          ! git grep -n "remove after 2026-07-15" HEAD -- src/platform/workflow/persistence
+          ! git grep -n "cleanupV1Data\|getMigrationStatus" HEAD -- src/platform/workflow/persistence
+          ! git grep -n "workflowName:" HEAD -- src/platform/workflow/persistence
+          git grep -n "error_loading_dialog_service_prompt_save" HEAD -- src/platform/workflow/management/stores/comfyWorkflow.ts
+          git status --short
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26.8.2
+          package-manager-cache: false
+
+      - name: Install pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.13.1 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Normalize changed TypeScript files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only "$EXPECTED_BASE"...HEAD -- '*.ts' '*.tsx')
+          printf '%s\n' "${changed[@]}"
+          if (("${#changed[@]}" > 0)); then
+            pnpm exec oxfmt --write "${changed[@]}"
           fi
+          if ! git diff --quiet; then
+            git add "${changed[@]}"
+            git commit --amend --no-edit
+          fi
+          test "$(git rev-list --count "$EXPECTED_BASE"..HEAD)" -eq 1
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_BASE"
+
+      - name: Validate exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm typecheck
+          pnpm exec vitest run \
+            src/platform/workflow/management/stores/comfyWorkflow.test.ts \
+            src/platform/workflow/core/services/workflowService.test.ts \
+            src/platform/workflow/core/services/workflowService.persistence.test.ts \
+            src/platform/workflow/management/stores/workflowStore.persistence.test.ts \
+            src/platform/workflow/persistence/base/storageIO.test.ts \
+            src/platform/workflow/persistence/base/workflowViewState.test.ts \
+            src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.collision.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.malformedPayload.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.recovery.test.ts \
+            src/platform/workflow/persistence/migration/migrateV1toV2.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.persistenceControl.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts
+
+          mapfile -t changed < <(git diff --name-only "$EXPECTED_BASE"...HEAD -- '*.ts' '*.tsx')
+          pnpm exec oxfmt --check "${changed[@]}"
+          pnpm exec eslint "${changed[@]}"
+          pnpm exec oxlint --type-aware "${changed[@]}"
+          git diff --check "$EXPECTED_BASE"...HEAD
+
+          test "$(git rev-list --count "$EXPECTED_BASE"..HEAD)" -eq 1
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_BASE"
+          echo "FINAL_SHA=$(git rev-parse HEAD)"
+          echo "CHANGED_FILES=$(git diff --name-only "$EXPECTED_BASE"...HEAD | wc -l)"
+          echo "CHANGED_TS_FILES=${#changed[@]}"
+
+      - name: Recheck upstream and publish validated mirror
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch upstream main
+          actual="$(git rev-parse upstream/main)"
+          echo "upstream/main-after-validation=$actual"
+          test "$actual" = "$EXPECTED_BASE"
+          git push origin HEAD:"refs/heads/$CANDIDATE_BRANCH" --force
