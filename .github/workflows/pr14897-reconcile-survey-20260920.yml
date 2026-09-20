@@ -171,6 +171,21 @@ jobs:
           assert "export function getMigrationStatus" not in s
           path.write_text(s)
 
+          path = Path("src/platform/workflow/persistence/migration/migrateV1toV2.test.ts")
+          s = path.read_text()
+          s = s.replace("  cleanupV1Data,\n", "")
+          s = s.replace("  getMigrationStatus,\n", "")
+          cleanup_start = s.find("  describe('cleanupV1Data'")
+          tab_start = s.find("  describe('V1 tab state migration'")
+          assert cleanup_start >= 0 and tab_start > cleanup_start
+          s = s[:cleanup_start] + s[tab_start:]
+          status_start = s.find("  describe('getMigrationStatus'")
+          assert status_start >= 0
+          s = s[:status_start].rstrip() + "\n})\n"
+          assert "cleanupV1Data" not in s
+          assert "getMigrationStatus" not in s
+          path.write_text(s)
+
           path = Path("src/platform/workflow/persistence/migration/migrateV1toV2.recovery.test.ts")
           s = path.read_text()
           s = s.replace("  cleanupV1Data,\n", "")
@@ -196,10 +211,17 @@ jobs:
           path = Path("src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts")
           s = path.read_text()
           s = re.sub(r"^\s*workflowName: (?:null|'[^']*'),\n", "", s, flags=re.M)
+          obsolete_fallback_tests = re.compile(
+              r"\n    it\('does not use unscoped legacy fallbacks outside personal workspace'.*?"
+              r"(?=\n    it\('returns false when no drafts available')",
+              re.S,
+          )
+          s, count = obsolete_fallback_tests.subn("", s, count=1)
+          assert count == 1, "obsolete runtime fallback tests not found"
+          assert "keeps the legacy fallback available in personal workspace" not in s
           path.write_text(s)
           PY
 
-          git checkout upstream/main -- src/platform/workflow/persistence/migration/migrateV1toV2.test.ts
           git add src/platform/workflow/management/stores/comfyWorkflow.ts
           git add src/platform/workflow/persistence
           GIT_EDITOR=true git cherry-pick --continue
