@@ -238,6 +238,343 @@ jobs:
           git grep -n "error_loading_dialog_service_prompt_save" HEAD -- src/platform/workflow/management/stores/comfyWorkflow.ts
           git status --short
 
+      - name: Modernize PR-added tests for current repository policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          import textwrap
+          
+          def read(path: str) -> str:
+              return Path(path).read_text()
+          
+          def write(path: str, text: str) -> None:
+              Path(path).write_text(text)
+          
+          def modernize_test_harness(path: str) -> None:
+              s = read(path)
+              s = re.sub(
+                  r"^import \{ createTestingPinia \} from '@pinia/testing'\n",
+                  "",
+                  s,
+                  flags=re.M,
+              )
+              s = re.sub(
+                  r"^import \{ createPinia, setActivePinia \} from 'pinia'\n",
+                  "",
+                  s,
+                  flags=re.M,
+              )
+              s = re.sub(
+                  r"^import \{ setActivePinia \} from 'pinia'\n",
+                  "",
+                  s,
+                  flags=re.M,
+              )
+              s = re.sub(
+                  r"^\s*setActivePinia\(createTestingPinia\(\{ stubActions: false \}\)\)\n",
+                  "",
+                  s,
+                  flags=re.M,
+              )
+              s = re.sub(
+                  r"^\s*setActivePinia\(createTestingPinia\(\)\)\n",
+                  "",
+                  s,
+                  flags=re.M,
+              )
+              s = re.sub(
+                  r"^\s*setActivePinia\(createPinia\(\)\)\n",
+                  "",
+                  s,
+                  flags=re.M,
+              )
+              s = re.sub(
+                  r"vi\.mock\(\s*(['\"])([^'\"]+)\1\s*,",
+                  lambda m: "vi.mock(import(" + m.group(1) + m.group(2) + m.group(1) + "),",
+                  s,
+              )
+              write(path, s)
+          
+          for path in [
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.persistenceControl.test.ts",
+              "src/platform/workflow/management/stores/workflowStore.persistence.test.ts",
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts",
+          ]:
+              modernize_test_harness(path)
+          
+          for path in [
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts",
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts",
+          ]:
+              modernize_test_harness(path)
+              s = read(path)
+              storage_import = "import { StorageKeys } from '../base/storageKeys'\n"
+              assert storage_import in s
+              s = s.replace(
+                  storage_import,
+                  "import { resetStorageAvailable } from '../base/storageIO'\n"
+                  + storage_import
+                  + "import { useWorkflowDraftStoreV2 } from './workflowDraftStoreV2'\n",
+                  1,
+              )
+              s, count = re.subn(
+                  r"\nasync function freshStore\(\) \{\n"
+                  r"  vi\.resetModules\(\)\n"
+                  r"  const \{ useWorkflowDraftStoreV2 \} = await import\('./workflowDraftStoreV2'\)\n"
+                  r"  return useWorkflowDraftStoreV2\(\)\n"
+                  r"\}\n",
+                  "\n",
+                  s,
+                  count=1,
+              )
+              assert count == 1, "freshStore helper not found in " + path
+              s = s.replace(
+                  "const store = await freshStore()",
+                  "const store = useWorkflowDraftStoreV2()",
+              )
+              s = s.replace(
+                  "    sessionStorage.clear()\n",
+                  "    sessionStorage.clear()\n    resetStorageAvailable()\n",
+                  1,
+              )
+              assert "freshStore" not in s
+              write(path, s)
+          
+          # Fold workflowService.persistence.test.ts into the canonical suite.
+          path = "src/platform/workflow/core/services/workflowService.test.ts"
+          s = read(path)
+          start = s.index(
+              "    it('should save active workflow state through the V2 draft store'"
+          )
+          end = s.index(
+              "    it('should show an error toast when the V2 draft store cannot save'",
+              start,
+          )
+          block = s[start:end]
+          close = block.rfind("    })")
+          assert close >= 0
+          block = (
+              block[:close]
+              + "      expect(useWorkflowDraftStoreV2().markSaveSucceeded).toHaveBeenCalledOnce()\n"
+              + block[close:]
+          )
+          block += textwrap.dedent("""\
+              it('does not persist the outgoing workflow while persistence is paused', () => {
+                vi.spyOn(useSettingStore(), 'get').mockImplementation((key: string) => {
+                  return key === 'Comfy.Workflow.Persist'
+                })
+                const activeWorkflow = createModeTestWorkflow({
+                  path: 'workflows/paused.json'
+                })
+                workflowStore.activeWorkflow = activeWorkflow
+                vi.mocked(useWorkflowDraftStoreV2().isPersistencePaused).mockReturnValue(
+                  true
+                )
+          
+                useWorkflowService().beforeLoadNewGraph()
+          
+                expect(useWorkflowDraftStoreV2().saveDraft).not.toHaveBeenCalled()
+              })
+          
+              it('persists workflow view state when view restore is enabled', () => {
+                vi.spyOn(useSettingStore(), 'get').mockImplementation((key: string) => {
+                  return (
+                    key === 'Comfy.Workflow.Persist' ||
+                    key === 'Comfy.EnableWorkflowViewRestore'
+                  )
+                })
+                const activeWorkflow = createModeTestWorkflow({
+                  path: 'workflows/view-state.json'
+                })
+                activeWorkflow.changeTracker.ds = { scale: 0.5, offset: [10, -20] }
+                workflowStore.activeWorkflow = activeWorkflow
+          
+                useWorkflowService().beforeLoadNewGraph()
+          
+                const [, payload] = vi.mocked(useWorkflowDraftStoreV2().saveDraft).mock
+                  .calls[0]
+                expect(JSON.parse(payload).extra.ds).toEqual({
+                  scale: 0.5,
+                  offset: [10, -20]
+                })
+              })
+          
+          """)
+          s = s[:start] + block + s[end:]
+          
+          throw_anchor = (
+              "    it('should log and show an error toast when the V2 draft store throws'"
+          )
+          idx = s.index(throw_anchor)
+          dedupe = textwrap.dedent("""\
+              it('deduplicates repeated failures through the shared failure episode', () => {
+                vi.spyOn(useSettingStore(), 'get').mockImplementation((key: string) => {
+                  return key === 'Comfy.Workflow.Persist'
+                })
+                const addToastSpy = vi.spyOn(useToastStore(), 'add')
+                vi.mocked(useWorkflowDraftStoreV2().saveDraft).mockReturnValue(false)
+                vi.mocked(useWorkflowDraftStoreV2().shouldNotifySaveFailure)
+                  .mockReturnValueOnce(true)
+                  .mockReturnValueOnce(false)
+                workflowStore.activeWorkflow = createModeTestWorkflow({
+                  path: 'workflows/failure-episode.json'
+                })
+          
+                const service = useWorkflowService()
+                service.beforeLoadNewGraph()
+                service.beforeLoadNewGraph()
+          
+                expect(
+                  useWorkflowDraftStoreV2().shouldNotifySaveFailure
+                ).toHaveBeenCalledTimes(2)
+                expect(addToastSpy).toHaveBeenCalledTimes(1)
+              })
+          
+          """)
+          s = s[:idx] + dedupe + s[idx:]
+          write(path, s)
+          Path(
+              "src/platform/workflow/core/services/workflowService.persistence.test.ts"
+          ).unlink()
+          
+          # Fold useWorkflowPersistenceV2.reconciliation.test.ts into the canonical suite.
+          path = "src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.test.ts"
+          s = read(path)
+          
+          anchor = "  describe('loadPreviousWorkflowFromStorage', () => {"
+          idx = s.index(anchor)
+          failure_episode = textwrap.dedent("""\
+            it('keeps one save-failure notification across workflow transitions until recovery', async () => {
+              await loadBlankIntoActiveWorkflow()
+          
+              const workflowStore = useWorkflowStore()
+              const draftStore = useWorkflowDraftStoreV2()
+              const saveDraftSpy = vi.spyOn(draftStore, 'saveDraft')
+              saveDraftSpy.mockReturnValue(false)
+          
+              mountWorkflowPersistence()
+          
+              mocks.state.currentGraph = { nodes: [{ id: 1 }] }
+              mocks.state.graphChangedHandler?.()
+              await vi.runAllTimersAsync()
+          
+              mocks.state.currentGraph = { nodes: [{ id: 2 }] }
+              mocks.state.graphChangedHandler?.()
+              await vi.runAllTimersAsync()
+              expect(mockToastAdd).toHaveBeenCalledTimes(1)
+          
+              const second = workflowStore.createTemporary('second-workflow.json')
+              await workflowStore.openWorkflow(second)
+              await nextTick()
+              expect(mockToastAdd).toHaveBeenCalledTimes(1)
+          
+              saveDraftSpy.mockReturnValueOnce(true)
+              mocks.state.currentGraph = { nodes: [{ id: 3 }] }
+              mocks.state.graphChangedHandler?.()
+              await vi.runAllTimersAsync()
+          
+              saveDraftSpy.mockReturnValueOnce(false)
+              mocks.state.currentGraph = { nodes: [{ id: 4 }] }
+              mocks.state.graphChangedHandler?.()
+              await vi.runAllTimersAsync()
+              expect(mockToastAdd).toHaveBeenCalledTimes(2)
+            })
+          
+          """)
+          s = s[:idx] + failure_episode + s[idx:]
+          
+          startup_anchor = (
+              "    it('persists a temporary workflow once the user has modified it', async () => {"
+          )
+          idx = s.index(startup_anchor)
+          startup_test = textwrap.dedent("""\
+              it('persists a modified temporary startup workflow synchronously only once', async () => {
+                loadBlankWorkflowMock.mockImplementation(async () => {
+                  await loadBlankIntoActiveWorkflow()
+                  const workflow = useWorkflowStore().activeWorkflow
+                  if (workflow) workflow.isModified = true
+                })
+          
+                const draftStore = useWorkflowDraftStoreV2()
+                const saveDraftSpy = vi.spyOn(draftStore, 'saveDraft')
+                vi.spyOn(draftStore, 'getDraft').mockReturnValue(null)
+          
+                const { initializeWorkflow } = mountWorkflowPersistence()
+          
+                await initializeWorkflow()
+                expect(saveDraftSpy).toHaveBeenCalledOnce()
+          
+                await vi.runAllTimersAsync()
+                expect(saveDraftSpy).toHaveBeenCalledOnce()
+              })
+          
+          """)
+          s = s[:idx] + startup_test + s[idx:]
+          
+          restore_anchor = "    it('skips activation when persistence is disabled', async () => {"
+          idx = s.index(restore_anchor)
+          invalid_test = textwrap.dedent("""\
+              it('uses a default temporary workflow for schema-invalid draft JSON', async () => {
+                const workflowStore = useWorkflowStore()
+                vi.spyOn(workflowStore, 'loadWorkflows').mockResolvedValue()
+                vi.spyOn(console, 'warn').mockImplementation(() => {})
+          
+                const draftStore = useWorkflowDraftStoreV2()
+                const path = 'workflows/invalid-draft.json'
+                expect(
+                  draftStore.saveDraft(path, JSON.stringify({ title: 'not-a-workflow' }), {
+                    name: 'invalid-draft.json',
+                    isTemporary: true
+                  })
+                ).toBe(true)
+                writeTabState([path], 0)
+          
+                const { restoreWorkflowTabsState } = mountWorkflowPersistence()
+                await restoreWorkflowTabsState()
+          
+                const restored = workflowStore.getWorkflowByPath(path)
+                expect(restored).toBeDefined()
+                if (!restored?.content) {
+                  throw new Error('Expected restored temporary workflow content')
+                }
+                const restoredData = JSON.parse(restored.content) as {
+                  version?: unknown
+                  title?: unknown
+                }
+                expect(typeof restoredData.version).toBe('number')
+                expect(restoredData.title).toBeUndefined()
+                expect(draftStore.getDraft(path)).toBeNull()
+              })
+          
+          """)
+          s = s[:idx] + invalid_test + s[idx:]
+          write(path, s)
+          Path(
+              "src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.reconciliation.test.ts"
+          ).unlink()
+          
+          for path in [
+              "src/platform/workflow/core/services/workflowService.test.ts",
+              "src/platform/workflow/management/stores/workflowStore.persistence.test.ts",
+              "src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.test.ts",
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.persistenceControl.test.ts",
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts",
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts",
+              "src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts",
+          ]:
+              modernize_test_harness(path)
+          
+          PY
+          git add -A
+          HUSKY=0 git commit --amend --no-edit
+          test "$(git rev-list --count "$EXPECTED_BASE"..HEAD)" -eq 1
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_BASE"
+          ! git ls-tree -r --name-only HEAD | grep -q "workflowService.persistence.test.ts"
+          ! git ls-tree -r --name-only HEAD | grep -q "useWorkflowPersistenceV2.reconciliation.test.ts"
+
       - uses: actions/setup-node@v5
         with:
           node-version: 26.8.2
@@ -273,10 +610,10 @@ jobs:
         run: |
           set -euo pipefail
           pnpm typecheck
+          pnpm typecheck:browser
           pnpm exec vitest run \
             src/platform/workflow/management/stores/comfyWorkflow.test.ts \
             src/platform/workflow/core/services/workflowService.test.ts \
-            src/platform/workflow/core/services/workflowService.persistence.test.ts \
             src/platform/workflow/management/stores/workflowStore.persistence.test.ts \
             src/platform/workflow/persistence/base/storageIO.test.ts \
             src/platform/workflow/persistence/base/workflowViewState.test.ts \
@@ -294,6 +631,7 @@ jobs:
           pnpm exec oxfmt --check "${changed[@]}"
           pnpm exec eslint "${changed[@]}"
           pnpm exec oxlint --type-aware "${changed[@]}"
+          pnpm exec oxlint --config tools/oxlint-plugins/vitestCleanup.config.json "${changed[@]}"
           git diff --check "$EXPECTED_BASE"...HEAD
 
           test "$(git rev-list --count "$EXPECTED_BASE"..HEAD)" -eq 1
@@ -301,6 +639,9 @@ jobs:
           echo "FINAL_SHA=$(git rev-parse HEAD)"
           echo "CHANGED_FILES=$(git diff --name-only "$EXPECTED_BASE"...HEAD | wc -l)"
           echo "CHANGED_TS_FILES=${#changed[@]}"
+
+      - name: Full unit coverage
+        run: pnpm test:coverage
 
       - name: Recheck upstream and publish validated mirror
         shell: bash
