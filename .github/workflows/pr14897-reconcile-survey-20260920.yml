@@ -62,65 +62,69 @@ jobs:
           assert anchor in s
           s = s.replace(anchor, addition, 1)
 
-          old = """    if (draft) {
-              if (draft.updatedAt < this.lastModified) {
-                draftStore.removeDraft(this.path)
-                draft = undefined
-              }
-            }
-          """
-          new = """    // Temporary workflows restored from a draft have a synthetic creation
-              // timestamp, not an authoritative backing-file modification time. Comparing
-              // the draft against that timestamp makes every restored temporary draft look
-              // stale and deletes it immediately after recovery.
-              if (draft && !this.isTemporary) {
-                if (draft.updatedAt < this.lastModified) {
-                  draftStore.removeDraft(this.path)
-                  draft = undefined
-                }
-              }
-          """
-          assert old in s
-          s = s.replace(old, new, 1)
+          draft_pattern = re.compile(
+              r"    if \(draft\) \{\n"
+              r"      if \(draft\.updatedAt < this\.lastModified\) \{\n"
+              r"        draftStore\.removeDraft\(this\.path\)\n"
+              r"        draft = undefined\n"
+              r"      \}\n"
+              r"    \}\n"
+          )
+          draft_replacement = (
+              "    // Temporary workflows restored from a draft have a synthetic creation\n"
+              "    // timestamp, not an authoritative backing-file modification time. Comparing\n"
+              "    // the draft against that timestamp makes every restored temporary draft look\n"
+              "    // stale and deletes it immediately after recovery.\n"
+              "    if (draft && !this.isTemporary) {\n"
+              "      if (draft.updatedAt < this.lastModified) {\n"
+              "        draftStore.removeDraft(this.path)\n"
+              "        draft = undefined\n"
+              "      }\n"
+              "    }\n"
+          )
+          s, count = draft_pattern.subn(draft_replacement, s, count=1)
+          assert count == 1, "upstream draft freshness block not found"
 
-          old = """    const initialState = JSON.parse(this.originalContent)
-              const { ChangeTracker } = await import('@/scripts/changeTracker')
-              this.changeTracker = markRaw(new ChangeTracker(this, initialState))
-              if (draftState && draftContent) {
-                this.changeTracker.activeState = draftState
-                this.content = draftContent
-                this._isModified = true
-          """
-          new = """    const initialState = JSON.parse(this.originalContent) as ComfyWorkflowJSON
-
-              // Older or malformed draft payloads may not carry a usable viewport. For a
-              // persisted workflow, retain the authoritative saved view when it is valid.
-              const savedViewState = getValidWorkflowViewState(initialState.extra?.ds)
-              const draftViewState = getValidWorkflowViewState(draftState?.extra?.ds)
-              if (draftState && !draftViewState && savedViewState) {
-                draftState = {
-                  ...draftState,
-                  extra: {
-                    ...draftState.extra,
-                    ds: savedViewState
-                  }
-                }
-                draftContent = JSON.stringify(draftState)
-              }
-
-              const { ChangeTracker } = await import('@/scripts/changeTracker')
-              this.changeTracker = markRaw(new ChangeTracker(this, initialState))
-              if (draftState && draftContent) {
-                this.changeTracker.activeState = draftState
-                this.content = draftContent
-                // New drafts persist this bit when the outgoing canvas snapshot is taken.
-                // Older V2 drafts lack it, so stay conservative and preserve the historical
-                // behavior of treating any recovered draft as modified rather than doing a
-                // full synchronous graph comparison during workflow activation.
-                this._isModified = draft?.isModified ?? true
-          """
-          assert old in s
-          s = s.replace(old, new, 1)
+          state_pattern = re.compile(
+              r"    const initialState = JSON\.parse\(this\.originalContent\)\n"
+              r"    const \{ ChangeTracker \} = await import\('@/scripts/changeTracker'\)\n"
+              r"    this\.changeTracker = markRaw\(new ChangeTracker\(this, initialState\)\)\n"
+              r"    if \(draftState && draftContent\) \{\n"
+              r"      this\.changeTracker\.activeState = draftState\n"
+              r"      this\.content = draftContent\n"
+              r"      this\._isModified = true\n"
+          )
+          state_replacement = (
+              "    const initialState = JSON.parse(this.originalContent) as ComfyWorkflowJSON\n"
+              "\n"
+              "    // Older or malformed draft payloads may not carry a usable viewport. For a\n"
+              "    // persisted workflow, retain the authoritative saved view when it is valid.\n"
+              "    const savedViewState = getValidWorkflowViewState(initialState.extra?.ds)\n"
+              "    const draftViewState = getValidWorkflowViewState(draftState?.extra?.ds)\n"
+              "    if (draftState && !draftViewState && savedViewState) {\n"
+              "      draftState = {\n"
+              "        ...draftState,\n"
+              "        extra: {\n"
+              "          ...draftState.extra,\n"
+              "          ds: savedViewState\n"
+              "        }\n"
+              "      }\n"
+              "      draftContent = JSON.stringify(draftState)\n"
+              "    }\n"
+              "\n"
+              "    const { ChangeTracker } = await import('@/scripts/changeTracker')\n"
+              "    this.changeTracker = markRaw(new ChangeTracker(this, initialState))\n"
+              "    if (draftState && draftContent) {\n"
+              "      this.changeTracker.activeState = draftState\n"
+              "      this.content = draftContent\n"
+              "      // New drafts persist this bit when the outgoing canvas snapshot is taken.\n"
+              "      // Older V2 drafts lack it, so stay conservative and preserve the historical\n"
+              "      // behavior of treating any recovered draft as modified rather than doing a\n"
+              "      // full synchronous graph comparison during workflow activation.\n"
+              "      this._isModified = draft?.isModified ?? true\n"
+          )
+          s, count = state_pattern.subn(state_replacement, s, count=1)
+          assert count == 1, "upstream draft overlay block not found"
 
           assert "error_loading_dialog_service_prompt_save" in s
           assert "return null" in s[s.index("async promptSave"):]
