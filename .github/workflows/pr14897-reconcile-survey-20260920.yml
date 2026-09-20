@@ -1,0 +1,53 @@
+name: PR14897 reconciliation survey 20260920
+
+on:
+  push:
+    branches:
+      - mirror/pr-14897-reconcile-runner-20260920
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  survey:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Survey cherry-pick conflicts
+        shell: bash
+        env:
+          EXPECTED_BASE: b6b92312827417d18bd557472367c6020b90ad4f
+          PR_HEAD: 6eab8c21ffba4d256de1b3548b422ef547652d8b
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/Comfy-Org/ComfyUI_frontend.git || true
+          git fetch upstream main
+          actual="$(git rev-parse upstream/main)"
+          echo "upstream/main=$actual"
+          test "$actual" = "$EXPECTED_BASE"
+          git config user.name "xmarre"
+          git config user.email "54859656+xmarre@users.noreply.github.com"
+          git checkout -B pr14897-survey "$EXPECTED_BASE"
+          set +e
+          git cherry-pick "$PR_HEAD"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "CHERRY_PICK_CLEAN=1"
+            echo "candidate=$(git rev-parse HEAD)"
+            echo "parent=$(git rev-parse HEAD^)"
+            echo "changed_files=$(git diff --name-only HEAD^ HEAD | wc -l)"
+          else
+            echo "CHERRY_PICK_CLEAN=0"
+            echo "CONFLICTS_BEGIN"
+            git diff --name-only --diff-filter=U
+            echo "CONFLICTS_END"
+            echo "STATUS_BEGIN"
+            git status --short
+            echo "STATUS_END"
+            git cherry-pick --abort
+          fi
