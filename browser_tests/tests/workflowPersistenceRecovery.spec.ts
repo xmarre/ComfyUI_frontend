@@ -195,6 +195,7 @@ test.describe('Workflow persistence recovery regressions', () => {
     expect(activePath).toBe(`workflows/${workflowName}.json`)
     if (!activePath) throw new Error('Expected an active saved workflow path')
 
+    // fallow-ignore-next-line complexity -- test-only browser storage decoder keeps the persisted index/payload traversal visible at the assertion site.
     const persistedViewport = await comfyPage.page.evaluate((path) => {
       const indexPrefix = 'Comfy.Workflow.DraftIndex.v2:'
       for (let i = 0; i < localStorage.length; i++) {

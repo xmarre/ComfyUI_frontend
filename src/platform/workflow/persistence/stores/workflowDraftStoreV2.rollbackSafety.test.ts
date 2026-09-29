@@ -295,6 +295,7 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
     let incomingWriteRejected = false
     let finalIndexRejected = false
     let directRollbackFailed = false
+    // fallow-ignore-next-line complexity -- test-only fault injection models the ordered payload/index failures of one rollback transaction.
     storage.writeError = (key, value) => {
       if (key === targetPayloadKey) {
         if (value === previousPayload && !directRollbackFailed) {
@@ -362,6 +363,7 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
     let incomingWriteRejected = false
     let finalIndexInterrupted = false
 
+    // fallow-ignore-next-line complexity -- test-only fault injection distinguishes the payload quota failure from the later index interruption.
     storage.writeError = (key, value) => {
       if (
         key === targetPayloadKey &&
@@ -429,6 +431,7 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
     let incomingWriteRejected = false
     let finalIndexRejected = false
     let rollbackPayloadAttempts = 0
+    // fallow-ignore-next-line complexity -- test-only fault injection must preserve the exact two-attempt rollback state machine under test.
     storage.writeError = (key, value) => {
       if (key === targetPayloadKey) {
         if (value === previousPayload) {

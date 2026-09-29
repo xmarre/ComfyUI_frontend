@@ -35,6 +35,43 @@ export interface PendingWarnings {
   missingMediaCandidates?: MissingMediaCandidate[]
 }
 
+
+interface DraftViewStateOverlay {
+  state: ComfyWorkflowJSON | null
+  content: string | null
+}
+
+function shouldDiscardStaleDraft(
+  updatedAt: number,
+  lastModified: number,
+  isTemporary: boolean
+): boolean {
+  return !isTemporary && updatedAt < lastModified
+}
+
+function applySavedViewStateFallback(
+  initialState: ComfyWorkflowJSON,
+  draftState: ComfyWorkflowJSON | null,
+  draftContent: string | null
+): DraftViewStateOverlay {
+  if (!draftState) return { state: draftState, content: draftContent }
+
+  const savedViewState = getValidWorkflowViewState(initialState.extra?.ds)
+  const draftViewState = getValidWorkflowViewState(draftState.extra?.ds)
+  if (draftViewState || !savedViewState) {
+    return { state: draftState, content: draftContent }
+  }
+
+  const state = {
+    ...draftState,
+    extra: {
+      ...draftState.extra,
+      ds: savedViewState
+    }
+  }
+  return { state, content: JSON.stringify(state) }
+}
+
 export class ComfyWorkflow extends UserFile {
   static readonly basePath: string = 'workflows/'
   readonly tintCanvasBg?: string
@@ -127,11 +164,16 @@ export class ComfyWorkflow extends UserFile {
     // timestamp, not an authoritative backing-file modification time. Comparing
     // the draft against that timestamp makes every restored temporary draft look
     // stale and deletes it immediately after recovery.
-    if (draft && !this.isTemporary) {
-      if (draft.updatedAt < this.lastModified) {
-        draftStore.removeDraft(this.path)
-        draft = undefined
-      }
+    if (
+      draft &&
+      shouldDiscardStaleDraft(
+        draft.updatedAt,
+        this.lastModified,
+        this.isTemporary
+      )
+    ) {
+      draftStore.removeDraft(this.path)
+      draft = undefined
     }
 
     if (draft) {
@@ -159,18 +201,8 @@ export class ComfyWorkflow extends UserFile {
 
     // Older or malformed draft payloads may not carry a usable viewport. For a
     // persisted workflow, retain the authoritative saved view when it is valid.
-    const savedViewState = getValidWorkflowViewState(initialState.extra?.ds)
-    const draftViewState = getValidWorkflowViewState(draftState?.extra?.ds)
-    if (draftState && !draftViewState && savedViewState) {
-      draftState = {
-        ...draftState,
-        extra: {
-          ...draftState.extra,
-          ds: savedViewState
-        }
-      }
-      draftContent = JSON.stringify(draftState)
-    }
+    ;({ state: draftState, content: draftContent } =
+      applySavedViewStateFallback(initialState, draftState, draftContent))
 
     const { ChangeTracker } = await import('@/scripts/changeTracker')
     this.changeTracker = markRaw(new ChangeTracker(this, initialState))

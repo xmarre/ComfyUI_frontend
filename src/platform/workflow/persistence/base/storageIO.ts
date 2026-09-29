@@ -112,36 +112,42 @@ function isValidPayload(value: unknown): value is DraftPayloadV2 {
   )
 }
 
-function sanitizeIndexEntries(index: PersistedDraftIndexV2): DraftIndexV2 {
-  const entries: DraftIndexV2['entries'] = {}
+function isValidPersistedIndexEntry(
+  entry: unknown
+): entry is Record<string, unknown> {
+  if (typeof entry !== 'object' || entry === null) return false
+  const value = entry as Record<string, unknown>
+  return (
+    typeof value.path === 'string' &&
+    value.path.length > 0 &&
+    typeof value.name === 'string' &&
+    typeof value.isTemporary === 'boolean' &&
+    typeof value.updatedAt === 'number' &&
+    Number.isFinite(value.updatedAt)
+  )
+}
 
-  for (const [draftKey, entry] of Object.entries(index.entries)) {
-    if (typeof entry !== 'object' || entry === null) continue
+function normalizeIndexEntry(
+  entry: unknown
+): DraftIndexV2['entries'][string] | null {
+  if (!isValidPersistedIndexEntry(entry)) return null
 
-    const value = entry as unknown as Record<string, unknown>
-    if (
-      typeof value.path !== 'string' ||
-      value.path.length === 0 ||
-      typeof value.name !== 'string' ||
-      typeof value.isTemporary !== 'boolean' ||
-      typeof value.updatedAt !== 'number' ||
-      !Number.isFinite(value.updatedAt)
-    ) {
-      continue
-    }
-
-    const normalized = { ...value }
-    if (
-      'isModified' in normalized &&
-      typeof normalized.isModified !== 'boolean'
-    ) {
-      delete normalized.isModified
-    }
-    entries[draftKey] = normalized as unknown as DraftIndexV2['entries'][string]
+  const normalized = { ...entry }
+  if (
+    'isModified' in normalized &&
+    typeof normalized.isModified !== 'boolean'
+  ) {
+    delete normalized.isModified
   }
+  return normalized as unknown as DraftIndexV2['entries'][string]
+}
 
+function sanitizeIndexOrder(
+  order: unknown[],
+  entries: DraftIndexV2['entries']
+): string[] {
   const seen = new Set<string>()
-  const order = index.order.filter((draftKey): draftKey is string => {
+  return order.filter((draftKey): draftKey is string => {
     if (
       typeof draftKey !== 'string' ||
       !(draftKey in entries) ||
@@ -152,8 +158,20 @@ function sanitizeIndexEntries(index: PersistedDraftIndexV2): DraftIndexV2 {
     seen.add(draftKey)
     return true
   })
+}
 
-  return { ...index, order, entries }
+function sanitizeIndexEntries(index: PersistedDraftIndexV2): DraftIndexV2 {
+  const entries: DraftIndexV2['entries'] = {}
+  for (const [draftKey, entry] of Object.entries(index.entries)) {
+    const normalized = normalizeIndexEntry(entry)
+    if (normalized) entries[draftKey] = normalized
+  }
+
+  return {
+    ...index,
+    order: sanitizeIndexOrder(index.order, entries),
+    entries
+  }
 }
 
 /**

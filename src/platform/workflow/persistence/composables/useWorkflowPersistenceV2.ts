@@ -112,6 +112,42 @@ export function useWorkflowPersistenceV2() {
     return { state, json: JSON.stringify(state) }
   }
 
+  const saveWorkflowDraft = (
+    activeWorkflow: ComfyWorkflow,
+    workflowJson: string
+  ): boolean => {
+    try {
+      return draftStore.saveDraft(activeWorkflow.path, workflowJson, {
+        name: activeWorkflow.key,
+        isTemporary: activeWorkflow.isTemporary,
+        isModified: activeWorkflow.isModified
+      })
+    } catch (error) {
+      console.error('Failed to persist workflow draft', error)
+      return false
+    }
+  }
+
+  const notifyDraftSaveFailure = () => {
+    if (!draftStore.shouldNotifySaveFailure()) return
+    toast.add({
+      severity: 'error',
+      summary: t('g.error'),
+      detail: t('toastMessages.failedToSaveDraft')
+    })
+  }
+
+  const shouldRemoveSavedDraft = (
+    activeWorkflow: ComfyWorkflow,
+    draftState: ComfyWorkflowJSON
+  ): boolean =>
+    !activeWorkflow.isTemporary &&
+    !activeWorkflow.isModified &&
+    workflowViewStateEqual(
+      activeWorkflow.initialState.extra?.ds,
+      draftState.extra?.ds
+    )
+
   const persistCurrentWorkflow = () => {
     if (draftStore.isPersistencePaused() || !workflowPersistenceEnabled.value)
       return
@@ -124,25 +160,8 @@ export function useWorkflowPersistenceV2() {
     // Skip if unchanged, including the persisted viewport snapshot.
     if (workflowJson === lastSavedJsonByPath.value[workflowPath]) return
 
-    let saved = false
-    try {
-      saved = draftStore.saveDraft(workflowPath, workflowJson, {
-        name: activeWorkflow.key,
-        isTemporary: activeWorkflow.isTemporary,
-        isModified: activeWorkflow.isModified
-      })
-    } catch (error) {
-      console.error('Failed to persist workflow draft', error)
-    }
-
-    if (!saved) {
-      if (draftStore.shouldNotifySaveFailure()) {
-        toast.add({
-          severity: 'error',
-          summary: t('g.error'),
-          detail: t('toastMessages.failedToSaveDraft')
-        })
-      }
+    if (!saveWorkflowDraft(activeWorkflow, workflowJson)) {
+      notifyDraftSaveFailure()
       return
     }
 
@@ -153,13 +172,7 @@ export function useWorkflowPersistenceV2() {
 
     lastSavedJsonByPath.value[workflowPath] = workflowJson
 
-    const savedViewState = activeWorkflow.initialState.extra?.ds
-    const draftViewState = draftState.extra?.ds
-    if (
-      !activeWorkflow.isTemporary &&
-      !activeWorkflow.isModified &&
-      workflowViewStateEqual(savedViewState, draftViewState)
-    ) {
+    if (shouldRemoveSavedDraft(activeWorkflow, draftState)) {
       draftStore.removeDraft(workflowPath)
     }
   }
@@ -429,6 +442,27 @@ export function useWorkflowPersistenceV2() {
     }
   })
 
+  const restoreTemporaryWorkflow = async (path: string) => {
+    if (workflowStore.getWorkflowByPath(path)) return
+
+    const draft = draftStore.getDraft(path)
+    if (!draft?.isTemporary) return
+
+    try {
+      const parsedWorkflowData = JSON.parse(draft.data)
+      const workflowData = await validateComfyWorkflow(parsedWorkflowData)
+      if (workflowData) {
+        workflowStore.createTemporary(draft.name, workflowData)
+        return
+      }
+    } catch (err) {
+      console.warn('Failed to parse workflow draft, creating with default', err)
+    }
+
+    draftStore.removeDraft(path)
+    workflowStore.createTemporary(draft.name)
+  }
+
   /**
    * Restores saved workflow tabs after initializeWorkflow skips the single-workflow fallback.
    * GraphCanvas must call this during startup when workflow persistence is enabled.
@@ -458,26 +492,7 @@ export function useWorkflowPersistenceV2() {
         restorableTabState
 
       for (const path of storedWorkflows) {
-        if (workflowStore.getWorkflowByPath(path)) continue
-        const draft = draftStore.getDraft(path)
-        if (!draft?.isTemporary) continue
-        try {
-          const parsedWorkflowData = JSON.parse(draft.data)
-          const workflowData = await validateComfyWorkflow(parsedWorkflowData)
-          if (!workflowData) {
-            draftStore.removeDraft(path)
-            workflowStore.createTemporary(draft.name)
-            continue
-          }
-          workflowStore.createTemporary(draft.name, workflowData)
-        } catch (err) {
-          console.warn(
-            'Failed to parse workflow draft, creating with default',
-            err
-          )
-          draftStore.removeDraft(path)
-          workflowStore.createTemporary(draft.name)
-        }
+        await restoreTemporaryWorkflow(path)
       }
 
       workflowStore.openWorkflowsInBackground({
