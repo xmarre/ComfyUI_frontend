@@ -615,16 +615,12 @@ describe('storageIO', () => {
         isolatedStorageIO.prepareWorkflowWorkspaceTransition()
 
       expect(isolatedStorageIO.deletePayload('ws-1', 'draft')).toBe(false)
-      expect(
-        isolatedStorageIO.deleteOrphanPayloads('ws-1', new Set())
-      ).toBe(0)
+      expect(isolatedStorageIO.deleteOrphanPayloads('ws-1', new Set())).toBe(0)
       expect(isolatedStorageIO.readPayload('ws-1', 'draft')).not.toBeNull()
 
       cancelTransition()
 
-      expect(
-        isolatedStorageIO.deleteOrphanPayloads('ws-1', new Set())
-      ).toBe(1)
+      expect(isolatedStorageIO.deleteOrphanPayloads('ws-1', new Set())).toBe(1)
       expect(isolatedStorageIO.readPayload('ws-1', 'draft')).toBeNull()
     })
   })

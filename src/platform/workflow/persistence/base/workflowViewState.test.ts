@@ -52,11 +52,7 @@ describe('workflowViewState', () => {
     const workflow = structuredClone(defaultGraph)
 
     expect(
-      withWorkflowViewState(
-        workflow,
-        { scale: 0, offset: [23, -17] },
-        true
-      )
+      withWorkflowViewState(workflow, { scale: 0, offset: [23, -17] }, true)
     ).toBe(workflow)
     expect(
       withWorkflowViewState(

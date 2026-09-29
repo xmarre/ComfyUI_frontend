@@ -431,9 +431,7 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     context: QuotaRecoveryContext,
     currentIndex: DraftIndexV2
   ): QuotaEvictionStep {
-    const oldestKey = currentIndex.order.find(
-      (key) => key !== context.draftKey
-    )
+    const oldestKey = currentIndex.order.find((key) => key !== context.draftKey)
     if (!oldestKey) return { kind: 'none' }
 
     const oldestEntry = getIndexEntry(currentIndex, oldestKey)
@@ -451,10 +449,7 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
       return { kind: 'cleaned', index: cleanedIndex }
     }
 
-    const evictedPayload = readPayload(
-      context.workspaceId,
-      result.removedKey
-    )
+    const evictedPayload = readPayload(context.workspaceId, result.removedKey)
 
     // Make the index stop owning this payload before deleting it. This keeps
     // index/payload invariants recoverable even if the page dies mid-retry.

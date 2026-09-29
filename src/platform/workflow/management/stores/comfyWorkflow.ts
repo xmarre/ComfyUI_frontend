@@ -35,7 +35,6 @@ export interface PendingWarnings {
   missingMediaCandidates?: MissingMediaCandidate[]
 }
 
-
 interface DraftViewStateOverlay {
   state: ComfyWorkflowJSON | null
   content: string | null

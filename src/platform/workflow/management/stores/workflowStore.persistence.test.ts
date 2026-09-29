@@ -88,7 +88,7 @@ describe('workflow store draft reconciliation', () => {
     const workflow = store.getWorkflowByPath('workflows/a.json')!
     const draftGraph = JSON.parse(defaultGraphJSON) as ComfyWorkflowJSON
     draftGraph.extra = {
-      ...(draftGraph.extra ?? {}),
+      ...draftGraph.extra,
       ds: { scale: 1.25, offset: [40, 80] }
     }
 
@@ -122,13 +122,13 @@ describe('workflow store draft reconciliation', () => {
     )!
     const savedGraph = JSON.parse(defaultGraphJSON) as ComfyWorkflowJSON
     savedGraph.extra = {
-      ...(savedGraph.extra ?? {}),
+      ...savedGraph.extra,
       ds: { scale: 0.85, offset: [12, -34] }
     }
 
     const draftGraph = JSON.parse(defaultGraphJSON) as ComfyWorkflowJSON
     draftGraph.extra = {
-      ...(draftGraph.extra ?? {})
+      ...draftGraph.extra
     }
     delete draftGraph.extra.ds
 
@@ -158,7 +158,7 @@ describe('workflow store draft reconciliation', () => {
     const draftGraph: ComfyWorkflowJSON = {
       ...baseGraph,
       extra: {
-        ...(baseGraph.extra ?? {}),
+        ...baseGraph.extra,
         draftMarker: 'restored-temporary'
       }
     }
