@@ -48,6 +48,26 @@ describe('workflowViewState', () => {
     expect(workflow.extra?.ds).toEqual(defaultGraph.extra?.ds)
   })
 
+  it('does not persist an invalid viewport', () => {
+    const workflow = structuredClone(defaultGraph)
+
+    expect(
+      withWorkflowViewState(
+        workflow,
+        { scale: 0, offset: [23, -17] },
+        true
+      )
+    ).toBe(workflow)
+    expect(
+      withWorkflowViewState(
+        workflow,
+        { scale: 0.8, offset: [23, Number.NaN] },
+        true
+      )
+    ).toBe(workflow)
+    expect(workflow.extra?.ds).toEqual(defaultGraph.extra?.ds)
+  })
+
   it('compares only validated viewport values', () => {
     expect(
       workflowViewStateEqual(

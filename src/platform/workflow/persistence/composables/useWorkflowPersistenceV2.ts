@@ -144,7 +144,7 @@ export function useWorkflowPersistenceV2() {
     !activeWorkflow.isTemporary &&
     !activeWorkflow.isModified &&
     workflowViewStateEqual(
-      activeWorkflow.initialState.extra?.ds,
+      activeWorkflow.initialState?.extra?.ds,
       draftState.extra?.ds
     )
 

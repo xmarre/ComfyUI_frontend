@@ -40,14 +40,14 @@ export function withWorkflowViewState(
 ): ComfyWorkflowJSON {
   if (!enabled || !viewState) return workflow
 
+  const validViewState = getValidWorkflowViewState(viewState)
+  if (!validViewState) return workflow
+
   return {
     ...workflow,
     extra: {
       ...workflow.extra,
-      ds: {
-        scale: viewState.scale,
-        offset: [viewState.offset[0], viewState.offset[1]]
-      }
+      ds: validViewState
     }
   }
 }

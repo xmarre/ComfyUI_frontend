@@ -600,6 +600,33 @@ describe('storageIO', () => {
       expect(isolatedStorageIO.getPayloadKeys('ws-1')).toContain('draft')
       cancelTransition()
     })
+
+    it('does not delete draft payloads while a workspace transition fences writes', async () => {
+      const isolatedStorageIO = await import('./storageIO')
+
+      expect(
+        isolatedStorageIO.writePayload('ws-1', 'draft', {
+          data: '{}',
+          updatedAt: 1
+        })
+      ).toBe(true)
+
+      const cancelTransition =
+        isolatedStorageIO.prepareWorkflowWorkspaceTransition()
+
+      expect(isolatedStorageIO.deletePayload('ws-1', 'draft')).toBe(false)
+      expect(
+        isolatedStorageIO.deleteOrphanPayloads('ws-1', new Set())
+      ).toBe(0)
+      expect(isolatedStorageIO.readPayload('ws-1', 'draft')).not.toBeNull()
+
+      cancelTransition()
+
+      expect(
+        isolatedStorageIO.deleteOrphanPayloads('ws-1', new Set())
+      ).toBe(1)
+      expect(isolatedStorageIO.readPayload('ws-1', 'draft')).toBeNull()
+    })
   })
 
   describe('clearWorkflowRestoreState', () => {

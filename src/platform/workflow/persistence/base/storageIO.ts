@@ -281,6 +281,8 @@ export function writePayload(
  * Deletes a draft payload from localStorage.
  */
 export function deletePayload(workspaceId: string, draftKey: string): boolean {
+  if (!isStorageAvailable()) return false
+
   try {
     localStorage.removeItem(draftPayloadStorageKey(workspaceId, draftKey))
     return true
@@ -332,8 +334,7 @@ export function deleteOrphanPayloads(
   let deleted = 0
 
   for (const key of payloadKeys) {
-    if (!indexKeys.has(key)) {
-      deletePayload(workspaceId, key)
+    if (!indexKeys.has(key) && deletePayload(workspaceId, key)) {
       deleted++
     }
   }
