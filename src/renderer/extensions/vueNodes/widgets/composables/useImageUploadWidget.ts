@@ -19,7 +19,6 @@ import {
   ACCEPTED_VIDEO_TYPES
 } from '@/utils/mediaUploadUtil'
 
-
 type ImageUploadComboWidget = Omit<IComboWidget, 'value' | 'callback'> & {
   value: string | number | string[]
   callback?: (value: string | number | string[]) => void
