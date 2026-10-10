@@ -35,7 +35,11 @@ import { useWorkflowStore } from '@/platform/workflow/management/stores/workflow
 import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
 import { useAppMode } from '@/composables/useAppMode'
 import { MIME_ASSET_INFO } from '@/platform/assets/schemas/mediaAssetSchema'
-import { fetchDroppedAsset, getDroppedAsset, markDropEventHandled } from '@/utils/eventUtils'
+import {
+  fetchDroppedAsset,
+  getDroppedAsset,
+  markDropEventHandled
+} from '@/utils/eventUtils'
 import { useAssetsStore } from '@/stores/assetsStore'
 import { AGENT_ATTACH_ACCEPT, isAgentAttachable } from './utils/attachableFiles'
 import { getNodeByLocatorId } from '@/utils/graphTraversalUtil'

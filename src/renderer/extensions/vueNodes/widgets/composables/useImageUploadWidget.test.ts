@@ -154,7 +154,7 @@ describe('useImageUploadWidget', () => {
     ).toBe(true)
   })
 
-  it('reserves hover ownership only for videos rejected due to missing extensions', () => {
+  it('reserves hover for extensionless videos', () => {
     const { node } = createUploadNode()
     constructVideo(node)
 

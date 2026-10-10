@@ -286,7 +286,7 @@ describe('useNodeDragAndDrop', () => {
     expect(onReject).toHaveBeenCalledWith([file])
   })
 
-  it('routes explicitly handled rejections to the node without warning on hover', async () => {
+  it('handles selected rejections without warning on hover', async () => {
     const file = createFile('extensionless', 'video/mp4')
     const onReject = vi.fn().mockReturnValue(true)
     const onDrop = vi.fn().mockResolvedValue([])
