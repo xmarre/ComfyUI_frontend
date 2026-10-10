@@ -84,6 +84,7 @@ export const useImageUploadWidget = () => {
       accept,
       folder,
       onReject: isVideo ? alertExtensionlessVideo : undefined,
+      canHandleRejectedFile: isVideo ? isExtensionlessVideo : undefined,
       onUploadStart: (files) => {
         if (files.length > 0) {
           const prev = fileComboWidget.value

@@ -17,6 +17,7 @@ interface DragAndDropOptions<T> {
   onResultItemDrop?: (item: ResultItem) => void
   fileFilter?: (file: File) => boolean
   onReject?: (files: File[]) => boolean
+  canHandleRejectedFile?: (file: File) => boolean
 }
 
 /**
@@ -27,7 +28,13 @@ export const useNodeDragAndDrop = <T>(
   node: LGraphNode,
   options: DragAndDropOptions<T>
 ) => {
-  const { onDragOver, onDrop, fileFilter = () => true } = options
+  const {
+    onDragOver,
+    onDrop,
+    fileFilter = () => true,
+    onReject,
+    canHandleRejectedFile
+  } = options
 
   const filterFiles = (files: FileList | File[]) =>
     Array.from(files)
@@ -70,6 +77,18 @@ export const useNodeDragAndDrop = <T>(
     if (customDragOver !== undefined) return customDragOver
 
     if (collectFiles(e).length > 0) return true
+
+    // Some rejected files are owned by the node for a specific warning.
+    // Ownership is decided without invoking the side-effecting rejection callback.
+    if (
+      onReject &&
+      canHandleRejectedFile &&
+      getDroppedFiles(e).some(
+        (file) => !fileFilter(file) && canHandleRejectedFile(file)
+      )
+    ) {
+      return true
+    }
 
     // Native OS drags may expose only opaque file items during dragover.
     // Keep hover affordance permissive here; drop remains strictly filtered.

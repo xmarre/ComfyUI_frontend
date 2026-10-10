@@ -286,6 +286,40 @@ describe('useNodeDragAndDrop', () => {
     expect(onReject).toHaveBeenCalledWith([file])
   })
 
+  it('routes explicitly handled rejections to the node without warning on hover', async () => {
+    const file = createFile('extensionless', 'video/mp4')
+    const onReject = vi.fn().mockReturnValue(true)
+    const onDrop = vi.fn().mockResolvedValue([])
+    const node = createNode()
+    useNodeDragAndDrop(node, {
+      onDrop,
+      fileFilter: () => false,
+      onReject,
+      canHandleRejectedFile: (file) =>
+        file.type.startsWith('video/') && !file.name.includes('.')
+    })
+
+    const extensionlessEvent = createDragEvent({
+      files: [file],
+      items: [{ kind: 'file', file }]
+    })
+    expect(node.onDragOver?.(extensionlessEvent)).toBe(true)
+    expect(onReject).not.toHaveBeenCalled()
+    expect(await node.onDragDrop?.(extensionlessEvent)).toBe(true)
+    expect(onReject).toHaveBeenCalledWith([file])
+    expect(onDrop).not.toHaveBeenCalled()
+
+    const unrelatedFile = createFile('notes.pdf', 'application/pdf')
+    expect(
+      node.onDragOver?.(
+        createDragEvent({
+          files: [unrelatedFile],
+          items: [{ kind: 'file', file: unrelatedFile }]
+        })
+      )
+    ).toBe(false)
+  })
+
   it('does not claim a rejected file when the rejection handler declines it', async () => {
     const onReject = vi.fn().mockReturnValue(false)
     const file = createFile('image.png')
