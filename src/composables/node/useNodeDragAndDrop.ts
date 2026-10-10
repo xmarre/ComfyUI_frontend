@@ -1,8 +1,12 @@
 import { useChainCallback } from '@/composables/functional/useChainCallback'
-import { partition } from 'es-toolkit'
 import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
 import { parseAssetInfo } from '@/platform/assets/schemas/mediaAssetSchema'
 import type { ResultItem } from '@/platform/remote/comfyui/execution/types'
+import {
+  getFilesFromItems,
+  isSyntheticImageBmpPlaceholder,
+  URI_DROP_TYPES
+} from '@/utils/eventUtils'
 
 type DragHandler = (e: DragEvent) => boolean
 type DropHandler<T> = (files: File[]) => Promise<T[]>
@@ -17,7 +21,7 @@ interface DragAndDropOptions<T> {
 
 /**
  * Adds drag and drop file handling to a node
- * Will also resolve 'text/uri-list' to a file before passing
+ * Will also resolve URI drops to a file before passing
  */
 export const useNodeDragAndDrop = <T>(
   node: LGraphNode,
@@ -25,23 +29,61 @@ export const useNodeDragAndDrop = <T>(
 ) => {
   const { onDragOver, onDrop, fileFilter = () => true } = options
 
-  const hasFiles = (items: DataTransferItemList) =>
-    !!Array.from(items).find((f) => f.kind === 'file')
-
   const filterFiles = (files: FileList | File[]) =>
-    Array.from(files).filter(fileFilter)
+    Array.from(files)
+      .filter((file) => !isSyntheticImageBmpPlaceholder(file))
+      .filter(fileFilter)
 
-  function handleRejectedFiles(files: File[]) {
-    return files.length > 0 && (options.onReject?.(files) ?? false)
+  const getDroppedFiles = (e: DragEvent | undefined): File[] => {
+    const transfer = e?.dataTransfer
+    if (!transfer) return []
+    const files = Array.from(transfer.files).filter(
+      (file) => !isSyntheticImageBmpPlaceholder(file)
+    )
+    const itemFiles = getFilesFromItems(transfer.items).filter(
+      (file) => !isSyntheticImageBmpPlaceholder(file)
+    )
+    return itemFiles.length > files.length ? itemFiles : files
+  }
+
+  const collectFiles = (e: DragEvent | undefined) =>
+    filterFiles(getDroppedFiles(e))
+
+  const hasOpaqueFileItems = (items: DataTransferItemList) =>
+    Array.from(items).some(
+      (item) => item.kind === 'file' && item.getAsFile() === null
+    )
+
+  const getDropUri = (dataTransfer: DataTransfer) => {
+    const uriType = URI_DROP_TYPES.find((type) =>
+      dataTransfer.types.includes(type)
+    )
+    if (!uriType) return ''
+    return dataTransfer.getData(uriType).split('\n').at(0)?.trim() ?? ''
   }
 
   const isDraggingFiles = (e: DragEvent | undefined) => {
-    if (!e?.dataTransfer?.items) return false
+    const dataTransfer = e?.dataTransfer
+    if (!dataTransfer) return false
+
+    const customDragOver = onDragOver?.(e)
+    if (customDragOver !== undefined) return customDragOver
+
+    if (collectFiles(e).length > 0) return true
+
+    // Native OS drags may expose only opaque file items during dragover.
+    // Keep hover affordance permissive here; drop remains strictly filtered.
+    // This hover result must never be cached as authorization for the drop.
     return (
-      onDragOver?.(e) ??
-      (hasFiles(e.dataTransfer.items) ||
-        e.dataTransfer.types.includes('text/uri-list'))
+      hasOpaqueFileItems(dataTransfer.items) ||
+      URI_DROP_TYPES.some((type) => dataTransfer.types.includes(type))
     )
+  }
+
+  const isDraggingValidFiles = (e: DragEvent | undefined) => {
+    const dataTransfer = e?.dataTransfer
+    if (!dataTransfer) return false
+    return collectFiles(e).length > 0 || !!getDropUri(dataTransfer)
   }
 
   const installedDragOver = isDraggingFiles
@@ -51,24 +93,26 @@ export const useNodeDragAndDrop = <T>(
     const { dataTransfer } = e
     if (!dataTransfer) return false
 
-    const droppedFiles = Array.from(dataTransfer.files)
-    const [files, rejectedFiles] = partition(droppedFiles, fileFilter)
-    const rejectedFilesClaimed = handleRejectedFiles(rejectedFiles)
+    const droppedFiles = getDroppedFiles(e)
+    const files = filterFiles(droppedFiles)
+    const rejectedFiles = droppedFiles.filter((file) => !fileFilter(file))
+    const rejectedFilesClaimed =
+      rejectedFiles.length > 0 && (options.onReject?.(rejectedFiles) ?? false)
     if (files.length) {
       await onDrop(files)
       return true
     }
-    if (dataTransfer.files.length) {
-      return rejectedFilesClaimed
-    }
+    if (droppedFiles.length) return rejectedFilesClaimed
+    if (!isDraggingValidFiles(e) && !parseAssetInfo(dataTransfer)?.filename)
+      return false
+
     const asset = parseAssetInfo(dataTransfer)
     if (asset?.filename && options.onResultItemDrop) {
       await options.onResultItemDrop(asset)
       return true
     }
 
-    const baseUri = dataTransfer.getData('text/uri-list')
-    if (!baseUri) return false
+    const baseUri = getDropUri(dataTransfer)
     const uri = URL.parse(baseUri, location.href)
     if (!uri || uri.origin !== location.origin) return false
 
@@ -83,9 +127,7 @@ export const useNodeDragAndDrop = <T>(
       const blob = await resp.blob()
       const file = new File([blob], fileName, { type: blob.type })
       const uriFiles = filterFiles([file])
-      if (!uriFiles.length) {
-        return handleRejectedFiles([file])
-      }
+      if (!uriFiles.length) return false
 
       await onDrop(uriFiles)
     } catch {
