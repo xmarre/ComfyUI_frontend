@@ -1,12 +1,13 @@
 import type { MediaKind } from '@/platform/assets/schemas/mediaAssetSchema'
 import { parseAssetInfo } from '@/platform/assets/schemas/mediaAssetSchema'
 import { getMediaTypeFromFilename } from '@/utils/formatUtil'
+import { isHdrImageFilename } from '@/utils/hdrFormatUtil'
 
 export const URI_DROP_TYPES = ['text/uri-list', 'text/x-moz-url']
 const handledDropEvents = new WeakSet<DragEvent>()
 
 const fallbackMediaExtensions = {
-  image: new Set(['heic', 'heif', 'jxl']),
+  image: new Set(['heic', 'heif', 'jxl', 'exr', 'hdr']),
   audio: new Set(['aac', 'm4a', 'opus']),
   video: new Set(['flv', 'm4v', 'mkv', 'wmv'])
 } as const
@@ -18,6 +19,28 @@ export interface DroppedAsset {
   kind?: MediaKind
   previewUrl?: string
   mediaUrl?: string
+}
+
+export function getFilesFromItems(
+  items: DataTransferItemList | undefined
+): File[] {
+  if (!items) return []
+  return Array.from(items)
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => !!file)
+}
+
+export function isSyntheticImageBmpPlaceholder(file: File): boolean {
+  return file.type === 'image/bmp' && file.size === 0
+}
+
+export function markDropEventHandled(event: DragEvent): void {
+  handledDropEvents.add(event)
+}
+
+export function isDropEventHandled(event: DragEvent): boolean {
+  return handledDropEvents.has(event)
 }
 
 export function getDroppedAsset(
@@ -66,19 +89,26 @@ export async function extractFilesFromDragEvent(
   const itemFiles = getFilesFromItems(event.dataTransfer.items).filter(
     (file) => !isSyntheticImageBmpPlaceholder(file)
   )
-  if (itemFiles.length > 0) return itemFiles
+  if (itemFiles.length > 0) return itemFiles.map(withHdrImageType)
 
-  // Chrome to Firefox external drags can include a zero-byte BMP placeholder.
   const files = Array.from(event.dataTransfer.files).filter(
     (file) => !isSyntheticImageBmpPlaceholder(file)
   )
-  if (files.length > 0) return files
+  if (files.length > 0) return files.map(withHdrImageType)
 
   const asset = getDroppedAsset(event.dataTransfer)
   if (!asset) return []
 
   const file = await fetchDroppedAsset(asset)
   return file ? [file] : []
+}
+
+export function withHdrImageType(file: File): File {
+  if (file.type || !isHdrImageFilename(file.name)) return file
+  const type = file.name.toLowerCase().endsWith('.hdr')
+    ? 'image/vnd.radiance'
+    : 'image/x-exr'
+  return new File([file], file.name, { type, lastModified: file.lastModified })
 }
 
 type SupportedMediaType = 'image' | 'audio' | 'video'

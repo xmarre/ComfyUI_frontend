@@ -257,6 +257,33 @@ describe('useNodeDragAndDrop', () => {
     expect(onDrop).toHaveBeenCalledWith([file])
   })
 
+  it.for([
+    { name: 'sky.exr', type: 'image/x-exr', itemsOnly: false },
+    { name: 'SKY.HDR', type: 'image/vnd.radiance', itemsOnly: true }
+  ])(
+    'passes untyped $name through an image filter (itemsOnly=$itemsOnly)',
+    async ({ name, type, itemsOnly }) => {
+      const onDrop = vi.fn().mockResolvedValue([])
+      const node = createNode()
+      useNodeDragAndDrop(node, {
+        onDrop,
+        fileFilter: (file) => file.type.startsWith('image/')
+      })
+      const file = new File(['data'], name, { lastModified: 123 })
+      const transfer = new DataTransfer()
+      transfer.items.add(file)
+      const event = new FakeDragEvent(
+        'drop',
+        itemsOnly ? createItemsOnlyDataTransfer(file) : transfer
+      )
+
+      await expect(node.onDragDrop?.(event)).resolves.toBe(true)
+      expect(onDrop).toHaveBeenCalledWith([
+        expect.objectContaining({ name, type, lastModified: 123, size: 4 })
+      ])
+    }
+  )
+
   it('onDragDrop returns false for invalid drops', async () => {
     const onDrop = vi.fn().mockResolvedValue([])
     const node = createNode()

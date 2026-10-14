@@ -2,7 +2,7 @@ import { ref } from 'vue'
 import type { Ref } from 'vue'
 
 import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
-import { app } from '@/scripts/app'
+import { useApp } from '@/scripts/appInstance'
 import {
   getFilesFromItems,
   isSyntheticImageBmpPlaceholder,
@@ -13,6 +13,7 @@ import {
 type DropErrorHandler = (error: unknown) => void
 
 function clearAppDragOverNode(nodeId: number | string | undefined) {
+  const app = useApp()
   if (nodeId === undefined || app.dragOverNode?.id !== nodeId) return
 
   app.dragOverNode = null
@@ -44,6 +45,7 @@ function isUriOnlyDrop(event: DragEvent): boolean {
 }
 
 function isAcceptedNodeDrop(event: DragEvent, node: LGraphNode): boolean {
+  const app = useApp()
   if (isUriOnlyDrop(event)) return false
   if (app.dragOverNode?.id !== node.id) return false
   return node.onDragOver?.(event) === true
@@ -53,6 +55,7 @@ export function useVueNodeDragAndDrop(
   lgraphNode: Readonly<Ref<LGraphNode | null | undefined>>,
   onError: DropErrorHandler
 ) {
+  const app = useApp()
   const isDraggingOver = ref(false)
   let acceptedNodeId: number | string | undefined
 
@@ -85,6 +88,13 @@ export function useVueNodeDragAndDrop(
   }
 
   async function handleDrop(event: DragEvent) {
+    if (event.defaultPrevented) {
+      clearDragOverState()
+      app.dragOverNode = null
+      markDropEventHandled(event)
+      return
+    }
+
     const node = lgraphNode.value
     if (!node?.onDragDrop) {
       clearDragOverState(node?.id)

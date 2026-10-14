@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { shallowRef } from 'vue'
 
-import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
+import { LGraphNode } from '@/lib/litegraph/src/litegraph'
 import { app } from '@/scripts/app'
 import { isDropEventHandled } from '@/utils/eventUtils'
 
@@ -28,6 +28,29 @@ describe('useVueNodeDragAndDrop', () => {
   beforeEach(() => {
     app.dragOverNode = null
     vi.mocked(app.handleFileDrop).mockClear()
+  })
+
+  it('does not route a consumed drop through a stale upload node', async () => {
+    const node = new LGraphNode()
+    node.onDragOver = vi.fn(() => true)
+    node.onDragDrop = vi.fn(() => true)
+    const dataTransfer = new DataTransfer()
+    dataTransfer.items.add(
+      new File(['data'], 'image.png', { type: 'image/png' })
+    )
+    const { handleDragOver, handleDrop, isDraggingOver } =
+      useVueNodeDragAndDrop(shallowRef(node), vi.fn())
+    handleDragOver(createDragEvent('dragover', dataTransfer))
+    const event = createDragEvent('drop', dataTransfer)
+    event.preventDefault()
+
+    await handleDrop(event)
+
+    expect(node.onDragDrop).not.toHaveBeenCalled()
+    expect(app.handleFileDrop).not.toHaveBeenCalled()
+    expect(app.dragOverNode).toBeNull()
+    expect(isDraggingOver.value).toBe(false)
+    expect(isDropEventHandled(event)).toBe(true)
   })
 
   it('revalidates drop acceptance instead of reusing hover acceptance', async () => {

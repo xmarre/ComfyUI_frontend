@@ -5,7 +5,8 @@ import type { ResultItem } from '@/platform/remote/comfyui/execution/types'
 import {
   getFilesFromItems,
   isSyntheticImageBmpPlaceholder,
-  URI_DROP_TYPES
+  URI_DROP_TYPES,
+  withHdrImageType
 } from '@/utils/eventUtils'
 
 type DragHandler = (e: DragEvent) => boolean
@@ -50,7 +51,9 @@ export const useNodeDragAndDrop = <T>(
     const itemFiles = getFilesFromItems(transfer.items).filter(
       (file) => !isSyntheticImageBmpPlaceholder(file)
     )
-    return itemFiles.length > files.length ? itemFiles : files
+    return (itemFiles.length > files.length ? itemFiles : files).map(
+      withHdrImageType
+    )
   }
 
   const collectFiles = (e: DragEvent | undefined) =>
@@ -78,8 +81,6 @@ export const useNodeDragAndDrop = <T>(
 
     if (collectFiles(e).length > 0) return true
 
-    // Some rejected files are owned by the node for a specific warning.
-    // Ownership is decided without invoking the side-effecting rejection callback.
     if (
       onReject &&
       canHandleRejectedFile &&
@@ -90,9 +91,6 @@ export const useNodeDragAndDrop = <T>(
       return true
     }
 
-    // Native OS drags may expose only opaque file items during dragover.
-    // Keep hover affordance permissive here; drop remains strictly filtered.
-    // This hover result must never be cached as authorization for the drop.
     return (
       hasOpaqueFileItems(dataTransfer.items) ||
       URI_DROP_TYPES.some((type) => dataTransfer.types.includes(type))
@@ -146,7 +144,9 @@ export const useNodeDragAndDrop = <T>(
       const blob = await resp.blob()
       const file = new File([blob], fileName, { type: blob.type })
       const uriFiles = filterFiles([file])
-      if (!uriFiles.length) return false
+      if (!uriFiles.length) {
+        return options.onReject?.([file]) ?? false
+      }
 
       await onDrop(uriFiles)
     } catch {
