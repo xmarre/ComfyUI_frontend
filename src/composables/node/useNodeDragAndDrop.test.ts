@@ -405,7 +405,7 @@ describe('useNodeDragAndDrop', () => {
 
   it('onDragDrop handles Firefox URI drops and ignores the title line', async () => {
     const onDrop = vi.fn().mockResolvedValue([])
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    const fetchSpy = vi.mocked(fetch).mockResolvedValue(
       fromAny<Response, unknown>({
         ok: true,
         blob: vi

@@ -31,7 +31,7 @@ describe('useVueNodeDragAndDrop', () => {
   })
 
   it('does not route a consumed drop through a stale upload node', async () => {
-    const node = new LGraphNode()
+    const node = new LGraphNode('Upload')
     node.onDragOver = vi.fn(() => true)
     node.onDragDrop = vi.fn(() => true)
     const dataTransfer = new DataTransfer()
