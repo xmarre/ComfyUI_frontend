@@ -35,7 +35,11 @@ import { useWorkflowStore } from '@/platform/workflow/management/stores/workflow
 import type { LGraphNode } from '@/lib/litegraph/src/litegraph'
 import { useAppMode } from '@/composables/useAppMode'
 import { MIME_ASSET_INFO } from '@/platform/assets/schemas/mediaAssetSchema'
-import { fetchDroppedAsset, getDroppedAsset } from '@/utils/eventUtils'
+import {
+  fetchDroppedAsset,
+  getDroppedAsset,
+  markDropEventHandled
+} from '@/utils/eventUtils'
 import type { DroppedAsset } from '@/utils/eventUtils'
 import { useAssetsStore } from '@/stores/assetsStore'
 import { useApiKeyAuthStore } from '@/stores/apiKeyAuthStore'
@@ -1994,10 +1998,16 @@ function onPanelDragOver(event: DragEvent): void {
   if (isAttachableDrag(event)) event.preventDefault()
 }
 
+function claimPanelDrop(event: DragEvent): void {
+  event.preventDefault()
+  event.stopPropagation()
+  markDropEventHandled(event)
+}
+
 async function onPanelDrop(event: DragEvent): Promise<void> {
   clearAssetDrag()
   if ((event.dataTransfer?.files.length ?? 0) === 0 && isAssetDrag(event)) {
-    event.preventDefault()
+    claimPanelDrop(event)
     void attachDroppedAsset(event).then((attached) => {
       if (attached)
         useTelemetry()?.trackAgentAttachButtonClicked({ method: 'drag_drop' })
@@ -2006,7 +2016,7 @@ async function onPanelDrop(event: DragEvent): Promise<void> {
   }
   const files = Array.from(event.dataTransfer?.files ?? [])
   if (files.length === 0) return
-  event.preventDefault()
+  claimPanelDrop(event)
   if (await attachment.addFiles(files))
     useTelemetry()?.trackAgentAttachButtonClicked({ method: 'drag_drop' })
 }
