@@ -6,6 +6,7 @@ import { useWorkflowDraftStoreV2 } from '@/platform/workflow/persistence/stores/
 import type { ComfyWorkflowJSON } from '@/platform/workflow/validation/schemas/workflowSchema'
 import { api } from '@/scripts/api'
 import { defaultGraphJSON } from '@/scripts/defaultGraph'
+import '@/scripts/changeTracker'
 
 vi.mock<unknown>(import('@/scripts/api'), () => ({
   api: {
