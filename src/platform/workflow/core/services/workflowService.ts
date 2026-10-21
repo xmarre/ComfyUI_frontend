@@ -183,7 +183,7 @@ export const useWorkflowService = () => {
     return withWorkflowViewState(
       activeState,
       activeWorkflow.changeTracker?.ds,
-      settingStore.get('Comfy.EnableWorkflowViewRestore')
+      { enabled: settingStore.get('Comfy.EnableWorkflowViewRestore') }
     )
   }
 
