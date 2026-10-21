@@ -110,7 +110,7 @@ export function useWorkflowPersistenceV2() {
     const state = withWorkflowViewState(
       graphData,
       comfyApp.canvas.ds,
-      settingStore.get('Comfy.EnableWorkflowViewRestore')
+      { enabled: settingStore.get('Comfy.EnableWorkflowViewRestore') }
     )
     return { state, json: JSON.stringify(state) }
   }

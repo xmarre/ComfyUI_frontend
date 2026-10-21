@@ -36,9 +36,9 @@ export function getValidWorkflowViewState(
 export function withWorkflowViewState(
   workflow: ComfyWorkflowJSON,
   viewState: ViewStateSource | undefined,
-  enabled: boolean
+  options: { enabled: boolean }
 ): ComfyWorkflowJSON {
-  if (!enabled || !viewState) return workflow
+  if (!options.enabled || !viewState) return workflow
 
   const validViewState = getValidWorkflowViewState(viewState)
   if (!validViewState) return workflow
