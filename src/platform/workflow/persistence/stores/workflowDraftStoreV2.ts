@@ -11,7 +11,10 @@ import { ref } from 'vue'
 import { reportError } from '@/platform/telemetry/reportError'
 import { useApp } from '@/scripts/appInstance'
 
-import type { DraftIndexV2, DraftPayloadV2 } from '@/platform/workflow/persistence/base/draftTypes'
+import type {
+  DraftIndexV2,
+  DraftPayloadV2
+} from '@/platform/workflow/persistence/base/draftTypes'
 import { MAX_DRAFTS } from '@/platform/workflow/persistence/base/draftTypes'
 import {
   createEmptyIndex,

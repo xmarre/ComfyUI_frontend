@@ -7,7 +7,10 @@ import { api } from '@/scripts/api'
 import { createEmptyIndex } from '@/platform/workflow/persistence/base/draftCacheV2'
 import { MAX_DRAFTS } from '@/platform/workflow/persistence/base/draftTypes'
 import { hashPath } from '@/platform/workflow/persistence/base/hashUtil'
-import { readIndex, resetStorageAvailable } from '@/platform/workflow/persistence/base/storageIO'
+import {
+  readIndex,
+  resetStorageAvailable
+} from '@/platform/workflow/persistence/base/storageIO'
 import { StorageKeys } from '@/platform/workflow/persistence/base/storageKeys'
 import { useWorkflowDraftStoreV2 } from './workflowDraftStoreV2'
 
