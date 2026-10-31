@@ -236,7 +236,11 @@ function readUsableDraft(
     return null
   }
   try {
-    return { state: JSON.parse(draft.data), content: draft.data, isModified: draft.isModified }
+    return {
+      state: JSON.parse(draft.data),
+      content: draft.data,
+      isModified: draft.isModified
+    }
   } catch (err) {
     console.warn('Failed to parse workflow draft, clearing it', err)
     runtime.removeDraft(workflow.path)

@@ -207,7 +207,11 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
 
     let payloadWritten: boolean
     try {
-      payloadWritten = writePayload(workspaceId, draftKey, payloadFor(workspaceId, draftKey, data, now))
+      payloadWritten = writePayload(
+        workspaceId,
+        draftKey,
+        payloadFor(workspaceId, draftKey, data, now)
+      )
     } catch (error) {
       if (!persistIndex(index)) {
         delete indexCacheByWorkspace.value[workspaceId]
@@ -248,7 +252,11 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
       : null
 
     if (
-      !writePayload(workspaceId, draftKey, payloadFor(workspaceId, draftKey, data, now))
+      !writePayload(
+        workspaceId,
+        draftKey,
+        payloadFor(workspaceId, draftKey, data, now)
+      )
     ) {
       return handleQuotaExceeded(path, data, meta, previousPayload)
     }
@@ -513,7 +521,16 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
   ): boolean | null {
     const now = Date.now()
     if (
-      !writePayload(context.workspaceId, context.draftKey, payloadFor(context.workspaceId, context.draftKey, context.data, now))
+      !writePayload(
+        context.workspaceId,
+        context.draftKey,
+        payloadFor(
+          context.workspaceId,
+          context.draftKey,
+          context.data,
+          now
+        )
+      )
     ) {
       return null
     }
@@ -527,7 +544,10 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     )
     if (persistIndex(finalIndex)) {
       deletePayloads(context.workspaceId, evicted)
-      deleteLineages(context.workspaceId, [...context.evictedPayloads.keys(), ...evicted])
+      deleteLineages(context.workspaceId, [
+        ...context.evictedPayloads.keys(),
+        ...evicted
+      ])
       return true
     }
 
@@ -676,11 +696,16 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     const index = loadIndex()
     const { index: newIndex, removedKey } = removeEntry(index, path)
 
-    if (removedKey) {
-      deletePayload(workspaceId, removedKey)
-      lineageByDraft.delete(lineageKey(workspaceId, removedKey))
-      persistIndex(newIndex)
+    if (!removedKey) return
+
+    // Commit the index removal before releasing its payload. A failed index
+    // write leaves the existing draft readable from the previous index.
+    if (!persistIndex(newIndex)) {
+      indexCacheByWorkspace.value[workspaceId] = index
+      return
     }
+    lineageByDraft.delete(lineageKey(workspaceId, removedKey))
+    deletePayload(workspaceId, removedKey)
   }
 
   /**
@@ -698,6 +723,7 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
         if (!written) return
 
         if (!persistIndex(result.index)) {
+          indexCacheByWorkspace.value[workspaceId] = index
           deletePayload(workspaceId, result.newKey)
           return
         }

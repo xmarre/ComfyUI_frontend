@@ -506,67 +506,67 @@ export function useWorkflowPersistenceV2() {
 
   const restoreSavedTabs = async () =>
     await runWithPersistencePaused(async () => {
-    if (!workflowPersistenceEnabled.value) {
-      tabStateRestored = true
-      return
-    }
-
-    const isRestoreCurrent = await waitForRestoreIdentity()
-
-    try {
-      await workflowStore.loadWorkflows()
-    } catch (err) {
-      console.error('Error loading workflows for tab restore', err)
-      await resolveStartupOutcome()
-      tabStateRestored = true
-      return
-    }
-
-    const restorableTabState = isRestoreCurrent()
-      ? getRestorableTabState()
-      : null
-    if (!restorableTabState) {
-      tabStateRestored = true
-      return
-    }
-    const { paths: storedWorkflows, activeIndex: storedActiveIndex } =
-      restorableTabState
-
-    for (const path of storedWorkflows) {
-      if (!isRestoreCurrent()) return
-      if (workflowStore.getWorkflowByPath(path)) continue
-      const draft = draftStore.getDraft(path)
-      if (!draft?.isTemporary) continue
-      try {
-        const parsed: unknown = JSON.parse(draft.data)
-        const workflowData = await validateComfyWorkflow(parsed)
-        if (!workflowData) throw new Error('Invalid persisted workflow draft')
-        if (!isRestoreCurrent()) return
-        workflowStore.createTemporary(draft.name, workflowData)
-      } catch (err) {
-        console.warn('Failed to parse workflow draft, creating with default', err)
-        if (!isRestoreCurrent()) return
-        draftStore.removeDraft(path)
-        workflowStore.createTemporary(draft.name)
+      if (!workflowPersistenceEnabled.value) {
+        tabStateRestored = true
+        return
       }
-    }
 
-    if (!isRestoreCurrent()) return
-    workflowStore.openWorkflowsInBackground({
-      left: storedWorkflows.slice(0, storedActiveIndex),
-      right: storedWorkflows.slice(storedActiveIndex)
-    })
+      const isRestoreCurrent = await waitForRestoreIdentity()
 
-    tabStateRestored = true
-    if (openedFolderWorkflows) return
+      try {
+        await workflowStore.loadWorkflows()
+      } catch (err) {
+        console.error('Error loading workflows for tab restore', err)
+        await resolveStartupOutcome()
+        tabStateRestored = true
+        return
+      }
 
-    const activePath = storedWorkflows[storedActiveIndex]
-    const workflow = activePath
-      ? workflowStore.getWorkflowByPath(activePath)
-      : null
-    if (workflow) {
-      await useWorkflowService().openWorkflow(workflow)
-    }
+      const restorableTabState = isRestoreCurrent()
+        ? getRestorableTabState()
+        : null
+      if (!restorableTabState) {
+        tabStateRestored = true
+        return
+      }
+      const { paths: storedWorkflows, activeIndex: storedActiveIndex } =
+        restorableTabState
+
+      for (const path of storedWorkflows) {
+        if (!isRestoreCurrent()) return
+        if (workflowStore.getWorkflowByPath(path)) continue
+        const draft = draftStore.getDraft(path)
+        if (!draft?.isTemporary) continue
+        try {
+          const parsed: unknown = JSON.parse(draft.data)
+          const workflowData = await validateComfyWorkflow(parsed)
+          if (!workflowData) throw new Error('Invalid persisted workflow draft')
+          if (!isRestoreCurrent()) return
+          workflowStore.createTemporary(draft.name, workflowData)
+        } catch (err) {
+          console.warn('Failed to parse workflow draft, creating with default', err)
+          if (!isRestoreCurrent()) return
+          draftStore.removeDraft(path)
+          workflowStore.createTemporary(draft.name)
+        }
+      }
+
+      if (!isRestoreCurrent()) return
+      workflowStore.openWorkflowsInBackground({
+        left: storedWorkflows.slice(0, storedActiveIndex),
+        right: storedWorkflows.slice(storedActiveIndex)
+      })
+
+      tabStateRestored = true
+      if (openedFolderWorkflows) return
+
+      const activePath = storedWorkflows[storedActiveIndex]
+      const workflow = activePath
+        ? workflowStore.getWorkflowByPath(activePath)
+        : null
+      if (workflow) {
+        await useWorkflowService().openWorkflow(workflow)
+      }
     })
 
   return {
