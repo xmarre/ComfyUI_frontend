@@ -59,7 +59,7 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
   // In-memory cache of the index per workspace (synced with localStorage)
   // Key is workspaceId, value is the cached index
   const indexCacheByWorkspace = ref<Record<string, DraftIndexV2>>({})
-  const lineageByDraft = new Map<string, DraftLineage>()
+  const lineageByDraft = new Map<string, DraftLineage | null>()
   const authSubject = ref<string | null | undefined>(undefined)
   let saveFailureNotified = false
   let persistencePauseDepth = 0
@@ -94,9 +94,17 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     data: string,
     updatedAt: number
   ): DraftPayloadV2 {
-    const lineage =
-      lineageByDraft.get(lineageKey(workspaceId, draftKey)) ??
-      readPayload(workspaceId, draftKey)?.lineage
+    const key = lineageKey(workspaceId, draftKey)
+    if (!lineageByDraft.has(key)) {
+      // Read a pre-existing lineage at most once after a cold start. Subsequent
+      // autosaves, including drafts without lineage, must not copy the previous
+      // workflow payload just to construct the next envelope.
+      lineageByDraft.set(
+        key,
+        readPayload(workspaceId, draftKey)?.lineage ?? null
+      )
+    }
+    const lineage = lineageByDraft.get(key)
     return { data, updatedAt, ...(lineage && { lineage }) }
   }
 
@@ -761,8 +769,9 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
       removeDraft(path)
       return null
     }
-    if (payload.lineage)
-      lineageByDraft.set(lineageKey(workspaceId, draftKey), payload.lineage)
+    const key = lineageKey(workspaceId, draftKey)
+    if (payload.lineage) lineageByDraft.set(key, payload.lineage)
+    else if (!lineageByDraft.has(key)) lineageByDraft.set(key, null)
 
     return {
       data: payload.data,

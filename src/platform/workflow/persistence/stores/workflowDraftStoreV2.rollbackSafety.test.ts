@@ -107,6 +107,29 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
     expect(store.getDraft(path)?.data).toBe('{"version":2}')
   })
 
+  it('preserves the prior CRDT lineage after a cold-cache overwrite', () => {
+    const store = useWorkflowDraftStoreV2()
+    const path = 'workflows/lineage-target.json'
+    const meta = { name: 'lineage-target', isTemporary: false }
+    const lineage = { workflowId: 'workflow-identity', lineageSeq: 7 }
+
+    expect(store.saveDraft(path, '{"version":1}', meta)).toBe(true)
+    store.setLineage(path, lineage)
+    store.reset()
+
+    expect(store.saveDraft(path, '{"version":2}', meta)).toBe(true)
+    expect(store.getDraft(path)).toMatchObject({
+      data: '{"version":2}',
+      lineage
+    })
+
+    const payloadKey = StorageKeys.draftPayload(path, 'personal')
+    const getItemSpy = vi.spyOn(storage, 'getItem')
+    getItemSpy.mockClear()
+    expect(store.saveDraft(path, '{"version":3}', meta)).toBe(true)
+    expect(getItemSpy).not.toHaveBeenCalledWith(payloadKey)
+  })
+
   it('leaves the committed payload untouched when the metadata write fails', async () => {
     const store = useWorkflowDraftStoreV2()
     const path = 'workflows/target.json'
