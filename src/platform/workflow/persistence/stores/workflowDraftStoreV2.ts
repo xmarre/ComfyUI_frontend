@@ -144,18 +144,6 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     return persistencePauseDepth > 0
   }
 
-  function payloadFor(
-    workspaceId: string,
-    draftKey: string,
-    data: string,
-    updatedAt: number
-  ): DraftPayloadV2 {
-    const lineage =
-      lineageByDraft.get(lineageKey(workspaceId, draftKey)) ??
-      readPayload(workspaceId, draftKey)?.lineage
-    return { data, updatedAt, ...(lineage && { lineage }) }
-  }
-
   /**
    * Loads the index from localStorage or creates empty.
    */

@@ -540,15 +540,18 @@ export function useWorkflowPersistenceV2() {
         try {
           const parsed: unknown = JSON.parse(draft.data)
           const workflowData = await validateComfyWorkflow(parsed)
-          if (!workflowData) throw new Error('Invalid persisted workflow draft')
           if (!isRestoreCurrent()) return
-          workflowStore.createTemporary(draft.name, workflowData)
+          if (workflowData) {
+            workflowStore.createTemporary(draft.name, workflowData)
+            continue
+          }
         } catch (err) {
-          console.warn('Failed to parse workflow draft, creating with default', err)
-          if (!isRestoreCurrent()) return
-          draftStore.removeDraft(path)
-          workflowStore.createTemporary(draft.name)
+          console.warn('Failed to restore temporary workflow draft', err)
         }
+
+        if (!isRestoreCurrent()) return
+        draftStore.removeDraft(path)
+        workflowStore.createTemporary(draft.name)
       }
 
       if (!isRestoreCurrent()) return
