@@ -1,0 +1,38 @@
+name: Validate PR 14897 Reconciliation
+on:
+  pull_request:
+    branches:
+      - validation/pr-14897-upstream-20261031
+  push:
+    branches:
+      - validation/pr-14897-upstream-20261031
+permissions:
+  contents: read
+jobs:
+  persistence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-frontend
+      - name: Typecheck app
+        run: pnpm typecheck:app
+      - name: Focused workflow persistence tests
+        run: |
+          pnpm exec vitest run \
+            src/platform/workflow/core/services/workflowService.test.ts \
+            src/platform/workflow/management/stores/workflowStore.persistence.test.ts \
+            src/platform/workflow/persistence/base/storageIO.test.ts \
+            src/platform/workflow/persistence/base/workflowViewState.test.ts \
+            src/platform/workflow/persistence/composables/useWorkflowPersistenceV2.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.persistenceControl.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.quotaSafety.test.ts \
+            src/platform/workflow/persistence/stores/workflowDraftStoreV2.rollbackSafety.test.ts
+      - name: Format check changed implementation and tests
+        run: |
+          pnpm exec oxfmt --check \
+            src/platform/workflow/core/services/workflowService.ts \
+            src/platform/workflow/core/services/workflowService.test.ts \
+            src/platform/workflow/management/stores/comfyWorkflow.ts \
+            src/platform/workflow/management/stores/workflowStore.persistence.test.ts \
+            src/platform/workflow/persistence
