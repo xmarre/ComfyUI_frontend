@@ -1,35 +1,41 @@
 import type { LGraphCanvas, LGraphNode } from '@/lib/litegraph/src/litegraph'
 import { createNode } from '@/utils/createNode'
+import {
+  getFilesFromItems,
+  hasAudioType,
+  hasImageType,
+  hasVideoType
+} from '@/utils/eventUtils'
 
 function pasteItemsOnNode(
-  items: DataTransferItemList,
+  files: File[],
   node: LGraphNode | null,
-  contentType: string
+  contentType: 'image' | 'audio' | 'video'
 ): void {
   if (!node) return
 
-  const filteredItems = Array.from(items).filter((item) =>
-    item.type.startsWith(contentType)
-  )
-
-  const blob = filteredItems[0]?.getAsFile()
+  const matchesContentType =
+    contentType === 'image'
+      ? hasImageType
+      : contentType === 'audio'
+        ? hasAudioType
+        : hasVideoType
+  const filteredFiles = files.filter(matchesContentType)
+  const blob = filteredFiles.at(0)
   if (!blob) return
 
   node.pasteFile?.(blob)
-  node.pasteFiles?.(
-    filteredItems
-      .map((item) => item.getAsFile())
-      .filter((file) => file !== null)
-  )
+  node.pasteFiles?.(filteredFiles)
 }
 
 export async function pasteImageNode(
   canvas: LGraphCanvas,
   items: DataTransferItemList,
-  imageNode: LGraphNode | null = null
+  imageNode: LGraphNode | null = null,
+  files = getFilesFromItems(items)
 ): Promise<LGraphNode | null> {
   const node = imageNode ?? (await createNode(canvas, 'LoadImage'))
-  pasteItemsOnNode(items, node, 'image')
+  pasteItemsOnNode(files, node, 'image')
   return node
 }
 
@@ -50,10 +56,11 @@ export async function pasteImageNodes(
 export async function pasteAudioNode(
   canvas: LGraphCanvas,
   items: DataTransferItemList,
-  audioNode: LGraphNode | null = null
+  audioNode: LGraphNode | null = null,
+  files = getFilesFromItems(items)
 ): Promise<LGraphNode | null> {
   const node = audioNode ?? (await createNode(canvas, 'LoadAudio'))
-  pasteItemsOnNode(items, node, 'audio')
+  pasteItemsOnNode(files, node, 'audio')
   return node
 }
 
@@ -74,10 +81,11 @@ export async function pasteAudioNodes(
 export async function pasteVideoNode(
   canvas: LGraphCanvas,
   items: DataTransferItemList,
-  videoNode: LGraphNode | null = null
+  videoNode: LGraphNode | null = null,
+  files = getFilesFromItems(items)
 ): Promise<LGraphNode | null> {
   const node = videoNode ?? (await createNode(canvas, 'LoadVideo'))
-  pasteItemsOnNode(items, node, 'video')
+  pasteItemsOnNode(files, node, 'video')
   return node
 }
 
