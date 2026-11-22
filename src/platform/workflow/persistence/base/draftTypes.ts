@@ -17,10 +17,7 @@ export interface DraftEntryMeta {
   name: string
   /** Whether this is an unsaved temporary workflow */
   isTemporary: boolean
-  /**
-   * Whether the persisted graph content differs from the backing workflow.
-   * Optional for indexes written by older V2 builds.
-   */
+  /** Legacy modification metadata; new writes store it with the payload. */
   isModified?: boolean
   /**
    * Last metadata update timestamp.
@@ -57,6 +54,8 @@ export interface DraftPayloadV2 {
   /** Last workflow content write timestamp. */
   updatedAt: number
   lineage?: DraftLineage
+  /** Whether this exact graph content differs from the backing file. */
+  isModified?: boolean
 }
 
 export interface DraftLineage {

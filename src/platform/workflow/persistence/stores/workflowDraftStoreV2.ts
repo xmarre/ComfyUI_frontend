@@ -87,7 +87,8 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     workspaceId: string,
     draftKey: string,
     data: string,
-    updatedAt: number
+    updatedAt: number,
+    isModified?: boolean
   ): DraftPayloadV2 {
     const key = lineageKey(workspaceId, draftKey)
     if (!lineageByDraft.has(key)) {
@@ -100,7 +101,7 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
       )
     }
     const lineage = lineageByDraft.get(key)
-    return { data, updatedAt, ...(lineage && { lineage }) }
+    return { data, updatedAt, ...(lineage && { lineage }), isModified }
   }
 
   /**
@@ -259,19 +260,22 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
       ? loadIndex()
       : (readIndex(workspaceId) ?? createEmptyIndex())
     const existingEntry = getIndexEntry(index, draftKey)
+    // Keep the modification flag with the atomic payload write, rather than
+    // publishing a new clean/dirty flag for the old graph if rollback fails.
+    const { isModified, ...indexMeta } = meta
     const { index: newIndex } = upsertEntry(
       index,
       path,
-      { ...meta, updatedAt: now },
+      { ...indexMeta, updatedAt: now },
       Number.POSITIVE_INFINITY
     )
-    const payload = payloadFor(workspaceId, draftKey, data, now)
+    const payload = payloadFor(workspaceId, draftKey, data, now, isModified)
     const failure = existingEntry
       ? saveIndexedOverwrite(workspaceId, draftKey, payload, index, newIndex)
       : saveNewDraft(workspaceId, draftKey, payload, newIndex)
 
     if (failure) {
-      reportQuotaExhausted(draftId, index, payloadByteSize(data), failure)
+      reportQuotaExhausted(draftId, index, payloadByteSize(payload), failure)
       return false
     }
 
@@ -324,8 +328,8 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
   /**
    * Measures the UTF-8 byte size of the serialized payload envelope.
    */
-  function payloadByteSize(data: string): number {
-    return new TextEncoder().encode(JSON.stringify({ data, updatedAt: 0 }))
+  function payloadByteSize(payload: DraftPayloadV2): number {
+    return new TextEncoder().encode(JSON.stringify({ ...payload, updatedAt: 0 }))
       .length
   }
 
@@ -461,7 +465,10 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
       name: entry.name,
       isTemporary: entry.isTemporary,
       updatedAt: payload.updatedAt,
-      isModified: entry.isModified,
+      isModified:
+        typeof payload.isModified === 'boolean'
+          ? payload.isModified
+          : entry.isModified,
       lineage: payload.lineage
     }
   }

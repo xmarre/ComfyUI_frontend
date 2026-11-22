@@ -123,12 +123,15 @@ export function useWorkflowPersistenceV2() {
   )
 
   const lastSavedJsonByPath = ref<
-    Record<string, {
-      instanceId: string
-      lastModified: number
-      isModified: boolean
-      json: string
-    }>
+    Record<
+      string,
+      {
+        instanceId: string
+        lastModified: number
+        isModified: boolean
+        json: string
+      }
+    >
   >({})
   const persistenceRetryAfterByPath = new Map<string, number>()
   let persistenceScope = draftStore.getScope()
@@ -145,7 +148,9 @@ export function useWorkflowPersistenceV2() {
     }
   })
 
-  const getCurrentWorkflowDraft = (activeWorkflow: ComfyWorkflow): {
+  const getCurrentWorkflowDraft = (
+    activeWorkflow: ComfyWorkflow
+  ): {
     state: ComfyWorkflowJSON
     json: string
   } => {
@@ -210,10 +215,7 @@ export function useWorkflowPersistenceV2() {
     const tracker = activeWorkflow?.changeTracker
     if (!activeWorkflow || !tracker || !canCaptureCanvas(tracker)) return
 
-    if (
-      activeWorkflow.graph &&
-      activeWorkflow.graph !== useApp().rootGraph
-    )
+    if (activeWorkflow.graph && activeWorkflow.graph !== useApp().rootGraph)
       return
 
     const scope = draftStore.getScope()
@@ -538,7 +540,10 @@ export function useWorkflowPersistenceV2() {
 
   // Setup watchers
   watch(
-    [() => workflowStore.activeWorkflow, () => workflowStore.activeWorkflow?.path],
+    [
+      () => workflowStore.activeWorkflow,
+      () => workflowStore.activeWorkflow?.path
+    ],
     ([activeWorkflow]) => {
       // beforeLoadNewGraph owns the outgoing synchronous draft save. A pending
       // graphChanged callback belongs to the old graph, so cancel it rather

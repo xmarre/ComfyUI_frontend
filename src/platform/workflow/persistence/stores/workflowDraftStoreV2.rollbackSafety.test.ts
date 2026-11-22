@@ -166,7 +166,8 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
     expect(
       store.saveDraft(path, '{"version":1}', {
         name: 'target',
-        isTemporary: false
+        isTemporary: false,
+        isModified: true
       })
     ).toBe(true)
     const previousPayload = storage.getItem(payloadKey)!
@@ -188,7 +189,8 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
     expect(
       store.saveDraft(path, '{"version":2}', {
         name: 'target',
-        isTemporary: false
+        isTemporary: false,
+        isModified: false
       })
     ).toBe(false)
 
@@ -197,21 +199,32 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
     expect(storage.getItem(payloadKey)).toBe(previousPayload)
 
     storage.writeError = () => null
-    expect(store.getDraft(path)?.data).toBe('{"version":1}')
+    expect(store.getDraft(path)).toMatchObject({
+      data: '{"version":1}',
+      isModified: true
+    })
   })
 
   it('refuses an indexed overwrite without deleting other drafts and retries later', () => {
     const store = useWorkflowDraftStoreV2()
     const meta = { name: 'target', isTemporary: false }
-    expect(store.saveDraft('workflows/other.json', '{"id":"other"}', meta)).toBe(true)
-    expect(store.saveDraft('workflows/target.json', '{"id":"old"}', meta)).toBe(true)
+    expect(
+      store.saveDraft('workflows/other.json', '{"id":"other"}', meta)
+    ).toBe(true)
+    expect(
+      store.saveDraft('workflows/target.json', '{"id":"old"}', meta)
+    ).toBe(true)
     const before = new Map(storage.map)
     const key = StorageKeys.draftPayload('workflows/target.json', 'personal')
-    storage.writeError = (path) => path === key ? quotaError() : null
-    expect(store.saveDraft('workflows/target.json', '{"id":"new"}', meta)).toBe(false)
+    storage.writeError = (path) => (path === key ? quotaError() : null)
+    expect(
+      store.saveDraft('workflows/target.json', '{"id":"new"}', meta)
+    ).toBe(false)
     expect(storage.map).toEqual(before)
     storage.writeError = () => null
-    expect(store.saveDraft('workflows/target.json', '{"id":"new"}', meta)).toBe(true)
+    expect(
+      store.saveDraft('workflows/target.json', '{"id":"new"}', meta)
+    ).toBe(true)
     expect(store.getDraft('workflows/other.json')?.data).toBe('{"id":"other"}')
   })
 
@@ -224,8 +237,11 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
     const original = '{ "data": "{}", "updatedAt": 1 }'
     storage.setItem(key, original)
     const before = new Map(storage.map)
-    storage.writeError = (path) => path === StorageKeys.draftIndex('personal') ? quotaError() : null
-    expect(store.saveDraft(path, '{"id":"new"}', meta, { evict: false })).toBe(false)
+    storage.writeError = (path) =>
+      path === StorageKeys.draftIndex('personal') ? quotaError() : null
+    expect(
+      store.saveDraft(path, '{"id":"new"}', meta, { evict: false })
+    ).toBe(false)
     expect(storage.map).toEqual(before)
   })
 })

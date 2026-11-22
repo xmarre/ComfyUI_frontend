@@ -1247,10 +1247,12 @@ describe('useWorkflowPersistenceV2', () => {
     const draftStore = useWorkflowDraftStoreV2()
     for (let index = 0; index < MAX_DRAFTS; index++) {
       const name = `Inactive-${index}.json`
-      expect(draftStore.saveDraft(`workflows/${name}`, '{}', {
-        name,
-        isTemporary: true
-      })).toBe(true)
+      expect(
+        draftStore.saveDraft(`workflows/${name}`, '{}', {
+          name,
+          isTemporary: true
+        })
+      ).toBe(true)
     }
     const workflowStore = useWorkflowStore()
     const workflow = await workflowStore.createTemporary('Active.json').load()
@@ -1262,9 +1264,14 @@ describe('useWorkflowPersistenceV2', () => {
     window.dispatchEvent(new PageTransitionEvent('pagehide'))
     await vi.runAllTimersAsync()
 
-    expect(draftStore.getDraft(workflow.path, { fresh: true })?.data).toContain('active edit')
+    expect(draftStore.getDraft(workflow.path, { fresh: true })?.data).toContain(
+      'active edit'
+    )
     for (let index = 0; index < MAX_DRAFTS; index++) {
-      expect(draftStore.getDraft(`workflows/Inactive-${index}.json`, { fresh: true })?.data).toBe('{}')
+      expect(
+        draftStore.getDraft(`workflows/Inactive-${index}.json`, { fresh: true })
+          ?.data
+      ).toBe('{}')
     }
   })
 
