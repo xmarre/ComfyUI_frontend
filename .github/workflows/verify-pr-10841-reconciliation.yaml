@@ -1,0 +1,38 @@
+name: PR 10841 focused reconciliation checks
+on:
+  push:
+    branches:
+      - 'validation/pr-10841-20261122'
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 5ba58934344990ddfeeb620a2a48893dc133468f
+      - uses: ./.github/actions/setup-frontend
+        with:
+          node_cache: 'false'
+      - name: Focused unit tests
+        run: |
+          pnpm exec vitest run --maxWorkers=2 \
+            src/composables/node/useNodeDragAndDrop.test.ts \
+            src/renderer/core/clipboard/usePaste.test.ts \
+            src/renderer/extensions/vueNodes/components/LGraphNode.test.ts \
+            src/renderer/extensions/vueNodes/composables/useVueNodeDragAndDrop.test.ts \
+            src/renderer/extensions/vueNodes/widgets/composables/useImageUploadWidget.test.ts \
+            src/scripts/app.test.ts \
+            src/utils/__tests__/eventUtils.test.ts
+      - name: Agent attachment tests
+        if: ${{ !cancelled() }}
+        run: pnpm exec vitest run --maxWorkers=1 src/workbench/extensions/agent/AgentPanelRoot.test.ts -t 'attachment|drag|drop'
+      - name: Check changed path formatting
+        if: ${{ !cancelled() }}
+        run: |
+          git diff --name-only HEAD^ HEAD -z | xargs -0 pnpm exec oxfmt --check
+      - name: Application typecheck
+        if: ${{ !cancelled() }}
+        run: pnpm typecheck:app
