@@ -19,6 +19,10 @@ import {
   ensureWorkflowId,
   getLegacyWorkflowId
 } from '@/platform/workflow/core/utils/workflowId'
+import {
+  withWorkflowViewState,
+  workflowViewStateEqual
+} from '@/platform/workflow/persistence/base/workflowViewState'
 import { useWorkflowDraftStoreV2 } from '@/platform/workflow/persistence/stores/workflowDraftStoreV2'
 import {
   ComfyWorkflow,
@@ -39,6 +43,7 @@ import { useWorkflowThumbnail } from '@/renderer/core/thumbnail/useWorkflowThumb
 import { useApp } from '@/scripts/appInstance'
 import {
   bindCanvasTracker,
+  canCaptureCanvas,
   invalidateCanvasTracker,
   isCanvasCaptureBlocked,
   isCanvasOwner
@@ -295,41 +300,63 @@ export const useWorkflowService = () => {
   }
 
   const persistActiveWorkflowDraft = (activeWorkflow: ComfyWorkflow) => {
-    if (!settingStore.get('Comfy.Workflow.Persist') || !activeWorkflow.path) {
+    if (
+      workflowDraftStore.isPersistencePaused() ||
+      !settingStore.get('Comfy.Workflow.Persist') ||
+      !activeWorkflow.path
+    ) {
       return
     }
 
     const activeState = activeWorkflow.activeState
     if (!activeState) return
 
-    const savedState = activeWorkflow.changeTracker?.initialState
+    const savedState = activeWorkflow.initialState
+    const restoreView = settingStore.get('Comfy.EnableWorkflowViewRestore')
+    const draftState = withWorkflowViewState(
+      activeState,
+      activeWorkflow.changeTracker?.ds,
+      { enabled: restoreView }
+    )
     try {
       if (
         activeWorkflow.isPersisted &&
         !activeWorkflow.isModified &&
         savedState &&
-        ChangeTracker.graphEqual(savedState, activeState)
+        ChangeTracker.graphEqual(savedState, activeState) &&
+        (!restoreView ||
+          workflowViewStateEqual(savedState.extra?.ds, draftState.extra?.ds))
       ) {
-        workflowDraftStore.removeDraft(activeWorkflow.path)
+        if (
+          !workflowDraftStore.removeDraft(activeWorkflow.path) &&
+          workflowDraftStore.shouldNotifySaveFailure()
+        ) {
+          showFailedToSaveDraftToast()
+        }
         return
       }
 
       const saved = workflowDraftStore.saveDraft(
         activeWorkflow.path,
-        JSON.stringify(activeState),
+        JSON.stringify(draftState),
         {
           name: activeWorkflow.key,
-          isTemporary: activeWorkflow.isTemporary
+          isTemporary: activeWorkflow.isTemporary,
+          isModified: activeWorkflow.isModified
         },
         { minUpdatedAt: activeWorkflow.lastModified }
       )
 
-      if (!saved) {
+      if (saved) {
+        workflowDraftStore.markSaveSucceeded()
+      } else if (workflowDraftStore.shouldNotifySaveFailure()) {
         showFailedToSaveDraftToast()
       }
     } catch (err) {
       console.error('Failed to persist active workflow draft', err)
-      showFailedToSaveDraftToast()
+      if (workflowDraftStore.shouldNotifySaveFailure()) {
+        showFailedToSaveDraftToast()
+      }
     }
   }
 
@@ -561,7 +588,12 @@ export const useWorkflowService = () => {
           await workflowStore.saveWorkflow(workflow)
           return true
         }
-        await deleteWorkflow(existing, true)
+        const stillTarget = () => {
+          const current = workflowStore.getWorkflowByPath(expectedPath)
+          return current !== null && toRaw(current) === toRaw(existing)
+        }
+        if (!stillTarget() || existing.path !== expectedPath) return false
+        if (!(await deleteWorkflow(existing, true, { stillTarget }))) return false
       }
       if (!(await renameWorkflow(workflow, expectedPath))) {
         await workflowStore.saveWorkflow(workflow)
@@ -1130,9 +1162,10 @@ export const useWorkflowService = () => {
     if (activeWorkflow) {
       if (!isCanvasCaptureBlocked()) {
         const tracker = (activeWorkflow as ComfyWorkflow).changeTracker
-        if (tracker) {
+        if (tracker && canCaptureCanvas(tracker)) {
           tracker.deactivate()
-        } else {
+          persistActiveWorkflowDraft(activeWorkflow)
+        } else if (!tracker) {
           reportWorkflowStateAnomaly(
             'Active workflow has no change tracker before loading a new graph',
             'beforeLoadNewGraph',
@@ -1140,7 +1173,6 @@ export const useWorkflowService = () => {
             { isActive: true }
           )
         }
-        persistActiveWorkflowDraft(activeWorkflow)
         const modelCandidates = useMissingModelStore().missingModelCandidates
         const mediaCandidates = useMissingMediaStore().missingMediaCandidates
         const nodeTypes = missingNodesErrorStore.missingNodesError?.nodeTypes
