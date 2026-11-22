@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 5ba58934344990ddfeeb620a2a48893dc133468f
+          ref: 9ed5446a82f7de743458978b625751f4d9e072a5
           fetch-depth: 2
       - uses: ./.github/actions/setup-frontend
         with:
