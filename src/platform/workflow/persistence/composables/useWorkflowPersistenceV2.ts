@@ -122,7 +122,14 @@ export function useWorkflowPersistenceV2() {
     settingStore.get('Comfy.Workflow.Persist')
   )
 
-  const lastSavedJsonByPath = ref<Record<string, string>>({})
+  const lastSavedJsonByPath = ref<
+    Record<string, {
+      instanceId: string
+      lastModified: number
+      isModified: boolean
+      json: string
+    }>
+  >({})
   const persistenceRetryAfterByPath = new Map<string, number>()
   let persistenceScope = draftStore.getScope()
 
@@ -220,16 +227,24 @@ export function useWorkflowPersistenceV2() {
 
     const { state: draftState, json: workflowJson } =
       getCurrentWorkflowDraft(activeWorkflow)
-    const saveKey = JSON.stringify([
-      activeWorkflow.instanceId,
-      activeWorkflow.lastModified,
-      activeWorkflow.isModified,
-      workflowJson
-    ])
+    const saveKey = {
+      instanceId: activeWorkflow.instanceId,
+      lastModified: activeWorkflow.lastModified,
+      isModified: activeWorkflow.isModified,
+      json: workflowJson
+    }
+    const previous = lastSavedJsonByPath.value[workflowPath]
 
     // Include modification metadata and workflow identity in the skip key.
     // Explicit checkpoint flushes verify storage even after a previous save.
-    if (!force && saveKey === lastSavedJsonByPath.value[workflowPath]) return
+    if (
+      !force &&
+      previous?.instanceId === saveKey.instanceId &&
+      previous.lastModified === saveKey.lastModified &&
+      previous.isModified === saveKey.isModified &&
+      previous.json === saveKey.json
+    )
+      return
 
     if (!saveWorkflowDraft(activeWorkflow, workflowJson, { evict })) {
       persistenceRetryAfterByPath.set(

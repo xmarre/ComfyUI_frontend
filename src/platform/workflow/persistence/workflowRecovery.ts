@@ -26,8 +26,6 @@ export function checkpointWorkflowRecovery(): boolean {
   const activeTracker = active?.changeTracker
   if (!active || !activeTracker || !canCaptureCanvas(activeTracker))
     return false
-  const app = useApp()
-  if (active.graph && active.graph !== app.rootGraph) return false
 
   const paths = workflowStore.openWorkflows
     .map((workflow) => workflow.path)
@@ -49,6 +47,8 @@ export function checkpointWorkflowRecovery(): boolean {
   }
 
   try {
+    const app = useApp()
+    if (active.graph && active.graph !== app.rootGraph) return false
     const snapshots = workflowStore.modifiedWorkflows.map((workflow) => {
       const isActive = workflow.path === active.path
       const graph = isActive
