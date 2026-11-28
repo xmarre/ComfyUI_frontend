@@ -110,7 +110,7 @@ export function markStorageUnavailable(): void {
       : { status: 'ready', availability: 'unavailable' }
 }
 
-function isStorageReadable(): boolean {
+export function isStorageReadable(): boolean {
   if (workflowStorageState.status === 'ready') {
     return workflowStorageState.availability === 'available'
   }
@@ -208,11 +208,12 @@ function sanitizeIndexOrder(
 }
 
 function sanitizeIndexEntries(index: PersistedDraftIndexV2): DraftIndexV2 {
-  const entries: DraftIndexV2['entries'] = Object.create(null)
-  for (const [draftKey, entry] of Object.entries(index.entries)) {
-    const normalized = normalizeIndexEntry(entry)
-    if (normalized) entries[draftKey] = normalized
-  }
+  const entries = Object.fromEntries(
+    Object.entries(index.entries).flatMap(([draftKey, entry]) => {
+      const normalized = normalizeIndexEntry(entry)
+      return normalized ? [[draftKey, normalized] as const] : []
+    })
+  )
 
   return {
     ...index,
@@ -418,6 +419,7 @@ function findAndMigratePointer<T extends { workspaceId: string }>(
     if (storageKey === newKey) continue
     const pointer = readSessionValue(storageKey, isValid)
     if (pointer?.workspaceId !== targetWorkspaceId) continue
+    if (!isStorageAvailable()) return pointer
     if (safeSessionStorage.setItem(newKey, JSON.stringify(pointer)) !== 'ok')
       return null
     safeSessionStorage.removeItem(storageKey)
@@ -438,12 +440,12 @@ function readSessionPointer<T extends { workspaceId: string }>(
     if (json) {
       const pointer: unknown = JSON.parse(json)
       if (!isValid(pointer)) {
-        safeSessionStorage.removeItem(key)
+        if (isStorageAvailable()) safeSessionStorage.removeItem(key)
       } else if (
         targetWorkspaceId &&
         pointer.workspaceId !== targetWorkspaceId
       ) {
-        safeSessionStorage.removeItem(key)
+        if (isStorageAvailable()) safeSessionStorage.removeItem(key)
       } else {
         return pointer
       }
@@ -523,6 +525,7 @@ export function readActivePath(
   targetWorkspaceId?: string,
   previousClientId: string | null = null
 ): ActivePathPointer | null {
+  if (!isStorageReadable()) return null
   return (
     (clientId
       ? readSessionPointer<ActivePathPointer>(
@@ -566,6 +569,7 @@ export function writeActivePath(
 
 /** Inverse of {@link writeActivePath}: drops both pointers it writes. */
 export function clearActivePath(clientId: string, workspaceId: string): void {
+  if (!isStorageAvailable()) return
   safeSessionStorage.removeItem(StorageKeys.activePath(clientId))
   safeLocalStorage.removeItem(StorageKeys.lastActivePath(workspaceId))
   removeSessionPointers(
@@ -580,6 +584,7 @@ export function clearActivePath(clientId: string, workspaceId: string): void {
 export function readPersistentOpenPaths(
   workspaceId: string
 ): OpenPathsPointer | null {
+  if (!isStorageReadable()) return null
   const pointer = readLocalPointer<OpenPathsPointer>(
     StorageKeys.lastOpenPaths(workspaceId),
     isValidOpenPathsPointer
@@ -597,6 +602,7 @@ export function readOpenPaths(
   targetWorkspaceId?: string,
   previousClientId: string | null = null
 ): OpenPathsPointer | null {
+  if (!isStorageReadable()) return null
   return (
     (clientId
       ? readSessionPointer<OpenPathsPointer>(

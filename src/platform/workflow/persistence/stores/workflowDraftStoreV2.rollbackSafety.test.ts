@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { resetStorageAvailable } from '@/platform/workflow/persistence/base/storageIO'
+import {
+  prepareWorkflowLogoutTransition,
+  resetStorageAvailable
+} from '@/platform/workflow/persistence/base/storageIO'
+import { hashPath } from '@/platform/workflow/persistence/base/hashUtil'
 import { StorageKeys } from '@/platform/workflow/persistence/base/storageKeys'
 import { useWorkflowDraftStoreV2 } from './workflowDraftStoreV2'
 
@@ -226,6 +230,69 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
       store.saveDraft('workflows/target.json', '{"id":"new"}', meta)
     ).toBe(true)
     expect(store.getDraft('workflows/other.json')?.data).toBe('{"id":"other"}')
+  })
+
+  it('keeps both colliding drafts intact when an indexed overwrite fails', () => {
+    const store = useWorkflowDraftStoreV2()
+    const first = 'workflows/ewip.json'
+    const second = 'workflows/4hbab.json'
+    const meta = { name: 'draft', isTemporary: false, isModified: true }
+    expect(hashPath(first)).toBe(hashPath(second))
+    expect(store.saveDraft(first, '{"id":1}', meta)).toBe(true)
+    expect(store.saveDraft(second, '{"id":2}', meta)).toBe(true)
+    const before = new Map(storage.map)
+    const indexKey = StorageKeys.draftIndex('personal')
+    storage.writeError = (key) => (key === indexKey ? quotaError() : null)
+
+    expect(store.saveDraft(second, '{"id":3}', meta)).toBe(false)
+    expect(storage.map).toEqual(before)
+    expect(store.getDraft(first)?.data).toBe('{"id":1}')
+    expect(store.getDraft(second)?.data).toBe('{"id":2}')
+  })
+
+  it('does not replace the cached owner or payload on a failed rename', () => {
+    const store = useWorkflowDraftStoreV2()
+    const from = 'workflows/original.json'
+    const to = 'workflows/renamed.json'
+    const meta = { name: 'original', isTemporary: false, isModified: true }
+    expect(store.saveDraft(from, '{"id":1}', meta)).toBe(true)
+    const before = new Map(storage.map)
+    const indexKey = StorageKeys.draftIndex('personal')
+    storage.writeError = (key) => (key === indexKey ? quotaError() : null)
+
+    store.moveDraft(from, to, 'renamed')
+    expect(storage.map).toEqual(before)
+    expect(store.getDraft(from)?.data).toBe('{"id":1}')
+    expect(store.getDraft(to)).toBeNull()
+
+    storage.writeError = () => null
+    store.moveDraft(from, to, 'renamed')
+    expect(store.getDraft(from)).toBeNull()
+    expect(store.getDraft(to)?.data).toBe('{"id":1}')
+    expect(storage.getItem(StorageKeys.draftPayload(from, 'personal'))).toBe(
+      before.get(StorageKeys.draftPayload(from, 'personal'))
+    )
+  })
+
+  it('does not cache an empty index during an aborted identity transition', () => {
+    const store = useWorkflowDraftStoreV2()
+    const first = 'workflows/first.json'
+    const second = 'workflows/second.json'
+    const meta = { name: 'draft', isTemporary: false }
+    expect(store.saveDraft(first, '{"id":1}', meta)).toBe(true)
+    expect(store.saveDraft(second, '{"id":2}', meta)).toBe(true)
+    store.reset()
+
+    const fence = prepareWorkflowLogoutTransition()
+    try {
+      expect(store.getDraft(first)).toBeNull()
+    } finally {
+      fence.release()
+    }
+
+    expect(store.saveDraft(first, '{"id":3}', meta)).toBe(true)
+    expect(store.getDraft(first)?.data).toBe('{"id":3}')
+    expect(store.getDraft(second)?.data).toBe('{"id":2}')
   })
 
   it('restores exact orphan bytes when a fresh-index checkpoint fails', () => {

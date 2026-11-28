@@ -994,6 +994,31 @@ describe('storageIO', () => {
       expect(isolatedStorageIO.getPayloadKeys('ws-1')).toEqual([])
     })
 
+    it('blocks tab pointer reads and ordinary deletion during an identity fence', async () => {
+      const isolatedStorageIO = await import('./storageIO')
+      const workspaceId = 'ws-1'
+      const clientId = 'client-1'
+      const path = 'workflows/a.json'
+      isolatedStorageIO.writeActivePath(clientId, { workspaceId, path })
+      isolatedStorageIO.writeOpenPaths(clientId, {
+        workspaceId,
+        paths: [path],
+        activeIndex: 0
+      })
+      const transition = isolatedStorageIO.prepareWorkflowLogoutTransition()
+      try {
+        expect(isolatedStorageIO.readActivePath(clientId, workspaceId)).toBeNull()
+        expect(isolatedStorageIO.readOpenPaths(clientId, workspaceId)).toBeNull()
+        expect(isolatedStorageIO.readPersistentOpenPaths(workspaceId)).toBeNull()
+        isolatedStorageIO.clearActivePath(clientId, workspaceId)
+      } finally {
+        transition.release()
+      }
+
+      expect(isolatedStorageIO.readActivePath(clientId, workspaceId)?.path).toBe(path)
+      expect(isolatedStorageIO.readOpenPaths(clientId, workspaceId)?.paths).toEqual([path])
+    })
+
     it('blocks reads when a logout overlaps a workspace transition', async () => {
       const isolatedStorageIO = await import('./storageIO')
       isolatedStorageIO.writePayload('ws-1', 'draft', {

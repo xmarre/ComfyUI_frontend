@@ -370,6 +370,7 @@ export function useWorkflowPersistenceV2() {
 
     const accountSwitchFence = prepareWorkflowLogoutTransition()
     debouncedPersist.cancel()
+    draftStore.reset()
     clearPersistenceTracking()
     clearWorkflowRestoreState()
     authTransition = authTransition

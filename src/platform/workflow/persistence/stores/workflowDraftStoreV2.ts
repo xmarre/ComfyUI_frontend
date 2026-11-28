@@ -34,6 +34,7 @@ import {
   deletePayload,
   getPayloadKeys,
   isStorageAvailable,
+  isStorageReadable,
   measureLocalStorage,
   readIndex,
   readPayload,
@@ -150,6 +151,11 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
    */
   function loadIndex(): DraftIndexV2 {
     const workspaceId = currentWorkspaceId()
+
+    // Do not publish a transient empty or partially readable index into the
+    // cache while a fence or unavailable backend prevents durable writes.
+    if (!isStorageAvailable())
+      return readIndex(workspaceId) ?? createEmptyIndex()
 
     const cached = getCachedIndex(workspaceId)
     if (cached) return cached
@@ -476,6 +482,7 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
   }
 
   function setLineage(path: string, lineage: DraftLineage): void {
+    if (!isStorageReadable()) return
     const workspaceId = currentWorkspaceId()
     const index = ownedIndex(workspaceId, path)
     if (!getEntryByPath(index, path)) {
