@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { useApp } from '@/scripts/appInstance'
 import {
   prepareWorkflowLogoutTransition,
   resetStorageAvailable
@@ -293,6 +294,28 @@ describe('workflowDraftStoreV2 overwrite and rollback safety', () => {
     expect(store.saveDraft(first, '{"id":3}', meta)).toBe(true)
     expect(store.getDraft(first)?.data).toBe('{"id":3}')
     expect(store.getDraft(second)?.data).toBe('{"id":2}')
+  })
+
+  it('does not delete another identity’s draft when a pending restore fails', async () => {
+    const store = useWorkflowDraftStoreV2()
+    const path = 'workflows/shared.json'
+    const meta = { name: 'shared', isTemporary: true }
+    store.setAuthSubject('first')
+    expect(store.saveDraft(path, '{"id":1}', meta)).toBe(true)
+    let rejectLoad!: (error: Error) => void
+    const pending = new Promise<void>((_, reject) => {
+      rejectLoad = reject
+    })
+    vi.mocked(useApp().loadGraphData).mockImplementationOnce(() => pending)
+
+    const restore = store.loadPersistedWorkflow({ preferredPath: path })
+    store.setAuthSubject('second')
+    expect(store.saveDraft(path, '{"id":2}', meta)).toBe(true)
+    rejectLoad(new Error('Restore interrupted'))
+    expect(await restore).toBe(false)
+    expect(store.getDraft(path)?.data).toBe('{"id":2}')
+    store.setAuthSubject('first')
+    expect(store.getDraft(path)?.data).toBe('{"id":1}')
   })
 
   it('restores exact orphan bytes when a fresh-index checkpoint fails', () => {

@@ -1015,8 +1015,12 @@ describe('storageIO', () => {
         transition.release()
       }
 
-      expect(isolatedStorageIO.readActivePath(clientId, workspaceId)?.path).toBe(path)
-      expect(isolatedStorageIO.readOpenPaths(clientId, workspaceId)?.paths).toEqual([path])
+      expect(isolatedStorageIO.readActivePath(clientId, workspaceId)?.path).toBe(
+        path
+      )
+      expect(
+        isolatedStorageIO.readOpenPaths(clientId, workspaceId)?.paths
+      ).toEqual([path])
     })
 
     it('blocks reads when a logout overlaps a workspace transition', async () => {

@@ -6,6 +6,7 @@ import {
   bindCanvasTracker,
   resetCanvasTrackerForTest
 } from '@/platform/workflow/core/canvasTrackerOwnership'
+import { safeLocalStorage } from '@/base/storage/safeStorage'
 import { useSettingStore } from '@/platform/settings/settingStore'
 import {
   skipLeavePromptOnce,
@@ -394,6 +395,18 @@ describe('UnloadWindowConfirmDialog', () => {
       expect(
         store.getDraft('workflows/active.json', { fresh: true })?.data
       ).toBe(JSON.stringify(blankGraph))
+    })
+
+    it('warns when drafts can only survive within the browser session', () => {
+      const backend = vi
+        .spyOn(safeLocalStorage, 'backend', 'get')
+        .mockReturnValue('sessionStorage')
+      try {
+        render(UnloadWindowConfirmDialog)
+        expect(leavePage().defaultPrevented).toBe(true)
+      } finally {
+        backend.mockRestore()
+      }
     })
 
     it('warns when draft persistence is disabled', () => {

@@ -2,6 +2,7 @@ import { isEqual } from 'es-toolkit'
 
 import type { ComfyWorkflowJSON } from '@comfyorg/graph-model/workflowSchema'
 import { reportError } from '@comfyorg/telemetry/reportError'
+import { safeLocalStorage } from '@/base/storage/safeStorage'
 import { useSettingStore } from '@/platform/settings/settingStore'
 import { canCaptureCanvas } from '@/platform/workflow/core/canvasTrackerOwnership'
 import {
@@ -18,7 +19,11 @@ import { useWorkflowDraftStoreV2 } from './stores/workflowDraftStoreV2'
 
 export function checkpointWorkflowRecovery(): boolean {
   const settings = useSettingStore()
-  if (!settings.get('Comfy.Workflow.Persist') || !isStorageAvailable())
+  if (
+    !settings.get('Comfy.Workflow.Persist') ||
+    !isStorageAvailable() ||
+    safeLocalStorage.backend !== 'localStorage'
+  )
     return false
 
   const workflowStore = useWorkflowStore()

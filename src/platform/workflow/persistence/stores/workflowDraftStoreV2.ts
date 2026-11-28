@@ -556,17 +556,26 @@ export const useWorkflowDraftStoreV2 = defineStore('workflowDraftV2', () => {
     path: string,
     isCurrent?: () => boolean
   ): Promise<boolean> {
+    const scope = currentWorkspaceId()
+    const stillCurrent = () =>
+      currentWorkspaceId() === scope &&
+      isStorageReadable() &&
+      isCurrent?.() !== false
+    if (!stillCurrent()) return false
     const draft = getDraft(path)
     if (!draft) return false
 
-    const loaded = await tryLoadGraph(draft.data, draft.name, isCurrent, () => {
-      removeDraft(path)
-    })
-    if (loaded) {
-      markDraftUsed(path)
-    }
-
-    return loaded
+    const loaded = await tryLoadGraph(
+      draft.data,
+      draft.name,
+      stillCurrent,
+      () => {
+        if (stillCurrent()) removeDraft(path)
+      }
+    )
+    if (!loaded || !stillCurrent()) return false
+    markDraftUsed(path)
+    return true
   }
 
   async function loadPersistedWorkflow(
